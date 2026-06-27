@@ -1,0 +1,663 @@
+// PIE-v1 SIGNALS | 2-Phase Inducement Engine — Modules M8–M10
+// Absolute Dollar Intelligence (ADI) | Emmanuel, Nairobi EAT/UTC+3
+// Depends on: PIE_v1_CORE.pine (must be added to chart first)
+//@version=6
+indicator("PIE-v1 SIGNALS | Entry • KNN • Narrative", overlay=true, max_lines_count=300, max_boxes_count=200, max_labels_count=300)
+
+// ═══════════════════════════════════════════════════════════════
+//  SHARED INPUTS (mirror from CORE)
+// ═══════════════════════════════════════════════════════════════
+grp_risk    = "Risk Management"
+i_risk_usd  = input.float(50.0,  "Dollar Risk per Trade ($)",  minval=1.0,  group=grp_risk)
+i_max_ep    = input.int(500,     "KNN Max Episodes",           minval=50,   maxval=2000, group=grp_risk)
+i_k         = input.int(7,       "KNN k neighbors",            minval=3,    maxval=21, group=grp_risk)
+
+grp_inst    = "Instrument"
+i_broker    = input.string("Pepperstone", "Broker", options=["Pepperstone","Deriv"], group=grp_inst)
+i_inst      = input.string("Auto", "Instrument", options=["Auto","XAUUSD","GBPUSD","V75","V50","V25","V10","StepIndex"], group=grp_inst)
+
+grp_col     = "ADI Colors"
+c_bull      = input.color(color.new(#00e676, 0),  "Bullish",      group=grp_col)
+c_bear      = input.color(color.new(#ff1744, 0),  "Bearish",      group=grp_col)
+c_neut      = input.color(color.new(#ffd600, 0),  "Neutral/MMM",  group=grp_col)
+c_vl        = input.color(color.new(#ff9800, 0),  "Vector Level", group=grp_col)
+
+grp_div     = "Confluence"
+i_use_div   = input.bool(true, "Enable Divergence Confluence", group=grp_div)
+i_div_src   = input.string("RSI", "Divergence Indicator", options=["RSI","MACD"], group=grp_div)
+i_rsi_len   = input.int(14, "RSI Length", minval=5, group=grp_div)
+
+grp_knn_log = "KNN Outcome Logging"
+i_log_outcome = input.int(2, "Log Trade Outcome (0=Loss 1=Win 2=Partial 9=Skip)", minval=0, maxval=9, group=grp_knn_log,
+     tooltip="Set to 0/1/2 the bar AFTER your trade closes. 9=skip (no log).")
+
+// ═══════════════════════════════════════════════════════════════
+//  INSTRUMENT SPECS (ADI pip/lot math)
+// ═══════════════════════════════════════════════════════════════
+f_pip_value_per_lot() =>
+    ticker = i_inst == "Auto" ? syminfo.ticker : i_inst
+    // Returns pip value per standard lot in USD
+    ticker == "XAUUSD" and i_broker == "Pepperstone" ? 10.0 :  // 100oz, $10/pip/lot
+    ticker == "XAUUSD" and i_broker == "Deriv"       ? 0.10 :  // 1oz, $0.10/pt/unit
+    ticker == "GBPUSD"                               ? 10.0 :  // std $10/pip/lot
+    ticker == "V75"                                  ? 1.0  :  // synthetic, 0.01pt
+    ticker == "V50"                                  ? 1.0  :
+    ticker == "V25"                                  ? 0.1  :
+    ticker == "V10"                                  ? 0.1  :
+    ticker == "StepIndex"                            ? 1.0  : 10.0  // default
+
+f_min_lot() =>
+    ticker = i_inst == "Auto" ? syminfo.ticker : i_inst
+    ticker == "XAUUSD" and i_broker == "Deriv" ? 1.0 : 0.01
+
+// lot_size = dollar_risk / (sl_pips × pip_value_per_lot)
+f_lot_size(float sl_pips, float dollar_risk) =>
+    pv = f_pip_value_per_lot()
+    pv > 0 and sl_pips > 0 ? math.max(f_min_lot(), dollar_risk / (sl_pips * pv)) : 0.0
+
+// ═══════════════════════════════════════════════════════════════
+//  IMPORT CORE MODULE VALUES
+//  (Add PIE_v1_CORE as a source indicator and pipe via request.security
+//   OR simply co-compute on same chart — both indicators on same symbol/TF
+//   share the same bar data, so we recalculate key values here directly.)
+// ═══════════════════════════════════════════════════════════════
+
+// Because Pine Script cannot import another indicator's internal vars,
+// we recalculate the minimum needed values here. The CORE indicator's
+// plot() exports appear in the Data Window for manual reading or
+// external scripting. For chart use, add both indicators to the same chart.
+
+// --- Minimal re-derivation of key CORE signals ---
+i_swing_len  = input.int(10, "Swing Lookback", minval=5, maxval=50, group="Structure (mirror CORE)")
+i_ob_len     = input.int(20, "OB Lookback",    minval=10, maxval=100, group="Structure (mirror CORE)")
+i_htf        = input.timeframe("240", "HTF Reference", group="Structure (mirror CORE)")
+i_bias       = input.string("Auto", "Manual Bias", options=["Auto","Bullish","Bearish","Ranging"], group="Structure (mirror CORE)")
+
+htf_close = request.security(syminfo.tickerid, i_htf, close,
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+htf_bull  = htf_close > htf_close[3] and htf_close[3] > htf_close[6]
+htf_bear  = htf_close < htf_close[3] and htf_close[3] < htf_close[6]
+
+f_bull() => i_bias == "Bullish" or (i_bias == "Auto" and htf_bull)
+f_bear() => i_bias == "Bearish" or (i_bias == "Auto" and htf_bear)
+
+// Swing highs/lows
+swing_h  = ta.pivothigh(high, i_swing_len, i_swing_len)
+swing_l  = ta.pivotlow(low,   i_swing_len, i_swing_len)
+
+var float sh1 = na
+var float sl1 = na
+if not na(swing_h) then sh1 := swing_h
+if not na(swing_l) then sl1 := swing_l
+
+// OB detection (simplified for signal generation)
+var float ob_high = na
+var float ob_low  = na
+var bool  ob_val  = false
+
+for i = 1 to i_ob_len
+    if f_bull() and close[i] < open[i] and close[i-1] > open[i-1]
+        atr_v = ta.atr(14)
+        if math.abs(close[i] - open[i]) > atr_v * 0.6
+            ob_high := open[i]
+            ob_low  := low[i]
+            ob_val  := true
+            break
+    if f_bear() and close[i] > open[i] and close[i-1] < open[i-1]
+        atr_v = ta.atr(14)
+        if math.abs(close[i] - open[i]) > atr_v * 0.6
+            ob_high := high[i]
+            ob_low  := open[i]
+            ob_val  := true
+            break
+
+// Phase 1 level
+var float ph1_level  = na
+var bool  ph1_swept  = false
+if ob_val and f_bull() and not na(ob_low)
+    for i = 1 to i_ob_len
+        if low[i] < ob_low
+            ph1_level := low[i]
+            break
+if ob_val and f_bear() and not na(ob_high)
+    for i = 1 to i_ob_len
+        if high[i] > ob_high
+            ph1_level := high[i]
+            break
+ph1_swept := not na(ph1_level) and (f_bull() ? low <= ph1_level : high >= ph1_level)
+
+// Phase 2 swept (simplified: BoS after Phase 1 sweep)
+var bool  ph2_swept   = false
+bos_bull_s = not na(sh1) and close > sh1 and close[1] <= sh1
+bos_bear_s = not na(sl1) and close < sl1 and close[1] >= sl1
+if ph1_swept and (f_bull() ? bos_bull_s : bos_bear_s)
+    ph2_swept := true
+
+// Vector Level
+var float vl = na
+if ph1_swept and not ph1_swept[1] and ob_val
+    vl := f_bull() ? ob_low : ob_high
+
+// MSS valid
+mss_valid = not na(vl) and ph2_swept and
+    (f_bull() ? (low <= vl and close > vl) or close > vl :
+                (high >= vl and close < vl) or close < vl)
+
+// Corrective leg
+var bool corr_leg = false
+if f_bear() and not na(sl1) and close < sl1 then corr_leg := true
+if f_bull() and not na(sh1) and close > sh1 then corr_leg := true
+
+// Inducement count
+var int ind_count = 0
+if ph1_swept and not ph1_swept[1] then ind_count := ind_count + 1
+if ph2_swept and not ph2_swept[1] then ind_count := ind_count + 1
+
+// ═══════════════════════════════════════════════════════════════
+//  SESSION CONTEXT (recalculate for M8 use)
+// ═══════════════════════════════════════════════════════════════
+eat_h = hour(time, "UTC+3")
+eat_m = minute(time, "UTC+3")
+tot   = eat_h * 60 + eat_m
+
+is_asia   = tot >= 180  and tot < 600
+is_fft    = tot >= 600  and tot < 660
+is_ldn    = tot >= 660  and tot < 720
+is_ny_op  = tot >= 960  and tot < 1020
+is_ny_tr  = tot >= 1020 and tot < 1080
+is_ldn_cl = tot >= 1200 and tot < 1260
+
+sess_id = is_asia ? 0 : is_fft ? 1 : is_ldn ? 2 : is_ny_op ? 3 : is_ny_tr ? 4 : is_ldn_cl ? 5 : na
+
+// MMM
+f_mmm(int hh, int mm) => math.abs(tot - (hh * 60 + mm)) <= 30
+is_mmm = f_mmm(11, 30) or f_mmm(12, 30) or f_mmm(16, 30) or f_mmm(17, 30)
+
+// Asia class (approximate from local range)
+var float _ah = na
+var float _al = na
+if is_asia
+    _ah := na(_ah) ? high : math.max(_ah, high)
+    _al := na(_al) ? low  : math.min(_al, low)
+if is_fft and not is_fft[1]
+    // lock
+
+asia_range = not na(_ah) and not na(_al) ? (_ah - _al) / syminfo.mintick / 10 : na
+asia_class = na(asia_range) ? na :
+    asia_range > 40 ? 4 : 5  // simplified: impulsive vs build-up
+
+// ═══════════════════════════════════════════════════════════════
+//  PREMIUM / DISCOUNT (50% gate)  — PDF pp 44–45
+// ═══════════════════════════════════════════════════════════════
+// The 50% equilibrium of the current HTF leg being traded
+// Find the swing high and low of the current leg on HTF
+htf_sh = request.security(syminfo.tickerid, i_htf, ta.highest(high, 20),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htf_sl = request.security(syminfo.tickerid, i_htf, ta.lowest(low, 20),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htf_mid = (htf_sh + htf_sl) / 2
+
+// premium = above 50%, discount = below 50%
+in_premium  = close > htf_mid
+in_discount = close <= htf_mid
+
+// Premium/Discount index for feature vector
+pd_idx = in_premium ? 0 : in_discount ? 1 : 2
+
+// Gate: suppress pro-trend continuations beyond 50%
+// If bullish and in premium → suppress buys; if bearish and in discount → suppress sells
+pd_gate_suppress = (f_bull() and in_premium) or (f_bear() and in_discount)
+
+// ═══════════════════════════════════════════════════════════════
+//  M8 — ENTRY SIGNAL GENERATOR  (PDF pp 38–42, 50–53)
+// ═══════════════════════════════════════════════════════════════
+// Signal types: "reversal" | "ipb_continuation" | "no_trade"
+
+// Divergence confluence
+rsi_val  = ta.rsi(close, i_rsi_len)
+// Bullish divergence: lower low in price, higher low in RSI
+div_bull = i_use_div and low < low[5] and rsi_val > rsi_val[5] and f_bull()
+// Bearish divergence: higher high in price, lower high in RSI
+div_bear = i_use_div and high > high[5] and rsi_val < rsi_val[5] and f_bear()
+div_present = div_bull or div_bear
+
+// Phase 2 type from structure
+ph2_type =
+    not ph1_swept ? na :
+    ta.crossover(close, ob_high) or ta.crossunder(close, ob_low) ? 0 :  // ChoCh
+    ind_count >= 2 ? 2 :                                                  // Two Ph1s
+    ph2_swept and not mss_valid ? 3 : 1                                   // 2nd Miss or RestLiq
+
+// Entry conditions
+reversal_cond =
+    mss_valid and
+    ph1_swept and ph2_swept and
+    ob_val and
+    not pd_gate_suppress and
+    barstate.isconfirmed
+
+ipb_cond =
+    ph1_swept and
+    not mss_valid and
+    not pd_gate_suppress and
+    (corr_leg or ind_count >= 1) and
+    barstate.isconfirmed
+
+// Signal classification
+sig_type =
+    reversal_cond ? "reversal" :
+    ipb_cond      ? "ipb_continuation" : "no_trade"
+
+// Entry zone (1m zone after Phase 2 mitigated)
+entry_high = f_bull() ? ob_high : ob_low
+entry_low  = f_bull() ? ob_low  : ob_high * 0.999
+
+// Stop-loss: end of confirmed manipulation sweep (beyond Phase 1)
+sl_distance_pips = not na(ph1_level) ?
+     math.abs(entry_low - ph1_level) / syminfo.mintick / 10 : ta.atr(14) / syminfo.mintick / 10
+
+sl_level = f_bull() ? entry_low - sl_distance_pips * syminfo.mintick * 10 :
+                      entry_high + sl_distance_pips * syminfo.mintick * 10
+
+// Targets: TP1 = Phase 1 opposite extreme, TP2 = HTF inducement, TP3 = HTF opposing zone
+tp_range = math.abs(entry_high - sl_level)
+tp1 = f_bull() ? entry_high + tp_range * 1.5  : entry_low  - tp_range * 1.5
+tp2 = f_bull() ? entry_high + tp_range * 2.5  : entry_low  - tp_range * 2.5
+tp3 = f_bull() ? entry_high + tp_range * 4.0  : entry_low  - tp_range * 4.0
+
+// Lot size calculation
+lot_size = f_lot_size(sl_distance_pips, i_risk_usd)
+
+// Entry aggressiveness modifier by Phase 2 type
+// Type 0 (ChoCh): wait for 5s/15s fail — most confirmation
+// Type 1 (RestLiq): 5s fail or limit after accumulation swept
+// Type 2 (Two Ph1s): limit acceptable
+// Type 3 (2nd Miss): limit into zone, near-zero post-tap
+aggressiveness =
+    not na(ph2_type) and ph2_type == 3 ? "LIMIT — near-zero post-tap" :
+    not na(ph2_type) and ph2_type == 2 ? "LIMIT — minimal post-tap" :
+    not na(ph2_type) and ph2_type == 1 ? "5s/15s fail or LIMIT" :
+    "Wait 5s/15s supply/demand fail"
+
+// ═══════════════════════════════════════════════════════════════
+//  FEATURE VECTOR (12 dimensions for KNN)
+// ═══════════════════════════════════════════════════════════════
+// [0]session_id [1]cycle_type [2]asia_class [3]phase1_type
+// [4]phase2_type [5]ob_type [6]pd_idx [7]inducement_count(norm)
+// [8]asia_range_pips(norm) [9]mmm_aligned [10]divergence [11]outcome
+
+f_make_fv(int outcome) =>
+    fv = array.new_float(12, 0.0)
+    array.set(fv, 0,  not na(sess_id)   ? sess_id  : 0.0)
+    array.set(fv, 1,  htf_bull ? 0.0 : htf_bear ? 1.0 : 2.0)   // cycle approximation
+    array.set(fv, 2,  not na(asia_class) ? asia_class : 5.0)
+    array.set(fv, 3,  timeframe.in_seconds() / 60 <= 1 ? 0.0 :
+                      timeframe.in_seconds() / 60 <= 5 ? 1.0 : 2.0)   // phase1_type
+    array.set(fv, 4,  not na(ph2_type)  ? ph2_type : 0.0)
+    array.set(fv, 5,  0.0)   // ob_type — engulfed default
+    array.set(fv, 6,  pd_idx)
+    array.set(fv, 7,  math.min(5.0, ind_count))
+    array.set(fv, 8,  not na(asia_range) ? math.min(1.0, asia_range / 100.0) : 0.5)
+    array.set(fv, 9,  is_mmm ? 1.0 : 0.0)
+    array.set(fv, 10, div_present ? 1.0 : 0.0)
+    array.set(fv, 11, outcome)
+    fv
+
+// ═══════════════════════════════════════════════════════════════
+//  M9 — KNN EPISODIC MEMORY
+// ═══════════════════════════════════════════════════════════════
+var float[] ep_store      = array.new_float(0)  // flat: episodes × 12 values
+var int     ep_count      = 0
+var float   m9_confidence = 0.0
+var string  m9_pattern    = "No episodes yet"
+var float   m9_risk_mult  = 1.0
+var int     m9_k_wins     = 0
+
+// Distance between two feature vectors (dims 0–10 only; dim 11 = outcome)
+// Weight inducement_count (dim 7) × 2 per PDF build notes
+f_euclidean_dist(float[] a, float[] b) =>
+    d = 0.0
+    for dim = 0 to 10
+        diff = array.get(a, dim) - array.get(b, dim)
+        w    = dim == 7 ? 2.0 : 1.0   // inducement_count weighted ×2
+        d   += w * diff * diff
+    math.sqrt(d)
+
+// Log an episode to store
+f_log_episode(float[] fv) =>
+    ep_arr_size = array.size(ep_store)
+    max_vals    = i_max_ep * 12
+    // Auto-trim: remove oldest episode (first 12 values)
+    if ep_arr_size >= max_vals
+        for _i = 0 to 11
+            array.remove(ep_store, 0)
+        ep_count := math.max(0, ep_count - 1)
+    // Append new episode
+    for dim = 0 to 11
+        array.push(ep_store, array.get(fv, dim))
+    ep_count := ep_count + 1
+
+// KNN inference
+f_knn_score(float[] query_fv) =>
+    n = ep_count
+    confidence = 0.0
+    pattern    = "No match"
+    risk_mult  = 1.0
+    k_wins     = 0
+
+    if n >= i_k
+        // Compute distances to all episodes
+        dists   = array.new_float(n, 0.0)
+        outcomes= array.new_float(n, 0.0)
+
+        for ep = 0 to n - 1
+            ep_fv = array.new_float(12, 0.0)
+            base  = ep * 12
+            for dim = 0 to 11
+                array.set(ep_fv, dim, array.get(ep_store, base + dim))
+            d = f_euclidean_dist(query_fv, ep_fv)
+            array.set(dists,    ep, d)
+            array.set(outcomes, ep, array.get(ep_fv, 11))
+
+        // Find k nearest (selection sort for k iterations)
+        used    = array.new_bool(n, false)
+        wins    = 0
+        w_sum   = 0.0
+        w_win   = 0.0
+
+        for _k = 0 to i_k - 1
+            best_d  = 1e10
+            best_ep = 0
+            for ep2 = 0 to n - 1
+                if not array.get(used, ep2) and array.get(dists, ep2) < best_d
+                    best_d  := array.get(dists, ep2)
+                    best_ep := ep2
+            array.set(used, best_ep, true)
+            w = best_d > 0 ? 1.0 / best_d : 100.0
+            w_sum  += w
+            outcome_k = array.get(outcomes, best_ep)
+            if outcome_k == 1.0 or outcome_k == 2.0   // win or partial = positive
+                wins   += 1
+                w_win  += w
+
+        k_wins     := wins
+        confidence := w_sum > 0 ? (w_win / w_sum) * 100.0 : 0.0
+
+        // Pattern tag — describe dominant cluster
+        dom_sess_id = math.round(array.get(query_fv, 0))
+        dom_ph2     = math.round(array.get(query_fv, 4))
+        sess_names2 = array.from("Asia","FFT","London","NYOpen","NYTrap","LdnClose")
+        ph2_names2  = array.from("ChoCh","RestLiq","2xPh1","2ndMiss")
+        pattern := array.get(sess_names2, math.min(5, dom_sess_id)) + "/" +
+                   array.get(ph2_names2,  math.min(3, dom_ph2)) +
+                   " ind#" + str.tostring(math.round(array.get(query_fv, 7)))
+
+        // Risk multiplier: 0.5–1.5 based on confidence
+        risk_mult := math.min(1.5, math.max(0.5, confidence / 100.0 * 1.5))
+
+    [confidence, pattern, risk_mult, k_wins]
+
+// On new signal: log + score
+var float   m9_conf_snap = 0.0
+var string  m9_pat_snap  = "—"
+var float   m9_rm_snap   = 1.0
+var int     m9_kw_snap   = 0
+
+if sig_type != "no_trade" and (sig_type != sig_type[1] or not barstate.isconfirmed)
+    qfv = f_make_fv(2)  // outcome=2 (partial) until logged
+    [c, p, r, kw] = f_knn_score(qfv)
+    m9_conf_snap := c
+    m9_pat_snap  := p
+    m9_rm_snap   := r
+    m9_kw_snap   := kw
+
+// Operator outcome logging: when i_log_outcome changes from 9, record last trade
+var int _last_logged = 9
+if i_log_outcome != 9 and _last_logged == 9 and ep_count >= 0
+    log_fv = f_make_fv(i_log_outcome)
+    f_log_episode(log_fv)
+    _last_logged := i_log_outcome
+if i_log_outcome == 9
+    _last_logged := 9
+
+// Divergence adds +5 to confidence
+m9_confidence := m9_conf_snap + (div_present and sig_type != "no_trade" ? 5.0 : 0.0)
+m9_pattern    := m9_pat_snap
+m9_risk_mult  := m9_rm_snap
+m9_k_wins     := m9_kw_snap
+
+// Effective risk after KNN modulation
+eff_risk  = i_risk_usd * m9_risk_mult
+eff_lots  = f_lot_size(sl_distance_pips, eff_risk)
+
+// ═══════════════════════════════════════════════════════════════
+//  SIGNAL VISUALS
+// ═══════════════════════════════════════════════════════════════
+is_new_signal = sig_type != "no_trade" and (sig_type != sig_type[1])
+
+if is_new_signal and barstate.isconfirmed
+    sig_col = sig_type == "reversal" ? c_bull : c_neut
+    sig_lbl = sig_type == "reversal" ? "▲ REVERSAL" : "▶ IPB"
+    if f_bear()
+        sig_lbl := sig_type == "reversal" ? "▼ REVERSAL" : "◀ IPB"
+    // Entry triangle
+    label.new(bar_index, f_bull() ? low : high, sig_lbl,
+         style=f_bull() ? label.style_label_up : label.style_label_down,
+         color=color.new(sig_col, 40), textcolor=sig_col, size=size.normal)
+    // SL line
+    if not na(sl_level)
+        line.new(bar_index, sl_level, bar_index + 40, sl_level,
+             color=color.new(c_bear, 30), style=line.style_dotted, width=2)
+        label.new(bar_index + 40, sl_level, "SL",
+             style=label.style_label_left, color=color.new(c_bear, 60),
+             textcolor=c_bear, size=size.tiny)
+    // TP lines
+    if not na(tp1)
+        line.new(bar_index, tp1, bar_index + 60, tp1,
+             color=color.new(c_bull, 40), style=line.style_dashed, width=1)
+        label.new(bar_index + 60, tp1, "TP1", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+    if not na(tp2)
+        line.new(bar_index, tp2, bar_index + 80, tp2,
+             color=color.new(c_bull, 30), style=line.style_dashed, width=1)
+        label.new(bar_index + 80, tp2, "TP2", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+    if not na(tp3)
+        line.new(bar_index, tp3, bar_index + 100, tp3,
+             color=color.new(c_bull, 20), style=line.style_dashed, width=1)
+        label.new(bar_index + 100, tp3, "TP3", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+
+// Divergence marker
+if div_present and barstate.isconfirmed
+    label.new(bar_index, div_bull ? low : high,
+         div_bull ? "DIV ▲" : "DIV ▼",
+         style=div_bull ? label.style_label_up : label.style_label_down,
+         color=color.new(color.purple, 60), textcolor=color.purple, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  M10 — GLASS BOX NARRATIVE  (ADI ADSA v7.0)
+// ═══════════════════════════════════════════════════════════════
+// Generate automated readable narrative
+
+sess_names_m10  = array.from("Asia", "Frankfurt", "London", "NY Open", "NY Trap", "London Close")
+cycle_names_m10 = array.from("Downtrend Run", "Slight Downtrend", "Within Range", "Trend Reversal")
+ph2_names_m10   = array.from("ChoCh Inducement", "Resting Liquidity/SMT", "Two Phase 1s", "Second Miss")
+amd_names_m10   = array.from("Accumulation", "Manipulation", "Distribution")
+
+sess_str_n  = not na(sess_id)  ? array.get(sess_names_m10,  math.min(5, sess_id))   : "Off-Hours"
+cycle_str_n = htf_bull ? array.get(cycle_names_m10, 0) : htf_bear ? array.get(cycle_names_m10, 1) : array.get(cycle_names_m10, 2)
+ph2_str_n   = not na(ph2_type) ? array.get(ph2_names_m10, math.min(3, ph2_type))    : "Unknown"
+amd_str_n   = mss_valid ? array.get(amd_names_m10, 2) : ph1_swept ? array.get(amd_names_m10, 1) : array.get(amd_names_m10, 0)
+bias_str_n  = f_bull() ? "BULLISH" : f_bear() ? "BEARISH" : "RANGING"
+
+// Tier 1 narrative (full — War Room)
+tier1 = "═══ PIE-v1 | ADI WAR ROOM ═══\n" +
+    "Session: " + sess_str_n + (is_mmm ? " ⚡ MMM ACTIVE" : "") + "\n" +
+    "Bias: " + bias_str_n + " | Cycle: " + cycle_str_n + "\n" +
+    "Asia Range: " + (not na(asia_range) ? str.tostring(math.round(asia_range)) + " pips" : "N/A") + "\n" +
+    "AMD Phase: " + amd_str_n + " | Ind#: " + str.tostring(ind_count) + "\n" +
+    "Phase 1: " + (ph1_swept ? "SWEPT ✓" : "Pending") + "\n" +
+    "Phase 2: " + (ph2_swept ? ph2_str_n + " ✓" : "Pending") + "\n" +
+    "MSS: " + (mss_valid ? "VALID ✓" : "Not confirmed") + "\n" +
+    "P/D Gate: " + (pd_gate_suppress ? "SUPPRESS ⛔ (beyond 50%)" : "Clear ✓") + "\n" +
+    "Signal: " + sig_type + "\n" +
+    "Entry: " + (not na(entry_high) ? str.tostring(entry_high, "#.#####") + " / " + str.tostring(entry_low, "#.#####") : "—") + "\n" +
+    "SL: " + (not na(sl_level) ? str.tostring(sl_level, "#.#####") + " (" + str.tostring(math.round(sl_distance_pips)) + "p)" : "—") + "\n" +
+    "Lots: " + str.tostring(math.round(eff_lots * 100) / 100, "#.##") + " @ $" + str.tostring(math.round(eff_risk)) + " risk\n" +
+    "KNN: " + str.tostring(math.round(m9_confidence)) + "% conf | " + m9_pattern + " | k-wins: " + str.tostring(m9_k_wins) + "\n" +
+    "Entry Style: " + aggressiveness
+
+// Tier 2 (TP updates)
+tier2 = "TP1: " + (not na(tp1) ? str.tostring(tp1, "#.#####") : "—") + "\n" +
+    "TP2: " + (not na(tp2) ? str.tostring(tp2, "#.#####") : "—") + "\n" +
+    "TP3: " + (not na(tp3) ? str.tostring(tp3, "#.#####") : "—") + "\n" +
+    "Runner: active until opposing Phase 1"
+
+// Tier 3 (environmental)
+tier3 = "Session: " + sess_str_n + (is_mmm ? " | MMM ⚡" : "") + "\n" +
+    "P/D Gate: " + (pd_gate_suppress ? "SUPPRESS" : "Clear") + "\n" +
+    (div_present ? "Divergence confluence active" : "No divergence")
+
+// Public channel (3 lines max)
+pub = sig_type != "no_trade" ?
+    (f_bull() ? "🟢 " : "🔴 ") + str.upper(sig_type) + " | " + sess_str_n + " | AMD:" + amd_str_n + "\n" +
+    "Entry: " + (not na(entry_high) ? str.tostring(entry_high, "#.#####") : "—") + " | SL: " + (not na(sl_level) ? str.tostring(sl_level, "#.#####") : "—") + "\n" +
+    "Full analysis in the War Room 🔐" :
+    "⏳ No active signal | " + amd_str_n + " phase"
+
+// Alert conditions (one per signal type)
+alertcondition(is_new_signal and sig_type == "reversal",
+     title="PIE-v1: REVERSAL Signal",
+     message="{syminfo.ticker} {timeframe.period}\n" + tier1)
+
+alertcondition(is_new_signal and sig_type == "ipb_continuation",
+     title="PIE-v1: IPB Continuation",
+     message="{syminfo.ticker} {timeframe.period}\n" + tier1)
+
+alertcondition(not is_new_signal and sig_type == "no_trade",
+     title="PIE-v1: No Trade (Environment)",
+     message="{syminfo.ticker} {timeframe.period}\n" + tier3)
+
+// TP hit alerts
+alertcondition(sig_type != "no_trade" and not na(tp1) and
+     (f_bull() ? high >= tp1 : low <= tp1),
+     title="PIE-v1: TP1 Hit",
+     message=tier2)
+alertcondition(sig_type != "no_trade" and not na(tp2) and
+     (f_bull() ? high >= tp2 : low <= tp2),
+     title="PIE-v1: TP2 Hit",
+     message=tier2)
+
+// ═══════════════════════════════════════════════════════════════
+//  GLASS BOX NARRATIVE TABLE (top-right, dark ADI theme)
+// ═══════════════════════════════════════════════════════════════
+var table narr = table.new(position.top_right, 1, 20,
+     bgcolor=color.new(#0a0a0a, 5), border_width=1, border_color=color.new(#222222, 0),
+     frame_width=2, frame_color=color.new(#333333, 0))
+
+if barstate.islast
+    // Header
+    table.cell(narr, 0, 0, "◈ PIE-v1 | ADI WAR ROOM", text_color=c_neut,
+         bgcolor=color.new(#1a1a2e, 0), text_size=size.small)
+
+    // Signal status (prominent)
+    sig_disp_col = sig_type == "reversal" ? c_bull : sig_type == "ipb_continuation" ? c_neut : color.gray
+    sig_disp     = sig_type == "reversal" ? (f_bull() ? "▲ REVERSAL BUY" : "▼ REVERSAL SELL") :
+                   sig_type == "ipb_continuation" ? (f_bull() ? "▶ IPB BUY" : "◀ IPB SELL") : "— Watching"
+    table.cell(narr, 0, 1, sig_disp, text_color=sig_disp_col,
+         bgcolor=color.new(sig_disp_col, 85), text_size=size.normal)
+
+    // Session + MMM
+    table.cell(narr, 0, 2, sess_str_n + (is_mmm ? " ⚡ MMM" : ""),
+         text_color=is_mmm ? c_neut : color.silver, text_size=size.tiny)
+
+    // Bias + Cycle
+    table.cell(narr, 0, 3, bias_str_n + " | " + cycle_str_n,
+         text_color=f_bull() ? c_bull : f_bear() ? c_bear : color.gray, text_size=size.tiny)
+
+    // AMD Phase
+    table.cell(narr, 0, 4, "AMD: " + amd_str_n + " | Ind#" + str.tostring(ind_count),
+         text_color=color.white, text_size=size.tiny)
+
+    // Phase status
+    table.cell(narr, 0, 5,
+         "Ph1: " + (ph1_swept ? "✓ swept" : "pending") + "  Ph2: " + (ph2_swept ? "✓ " + ph2_str_n : "pending"),
+         text_color=ph2_swept ? c_bull : ph1_swept ? c_neut : color.gray, text_size=size.tiny)
+
+    // MSS + P/D Gate
+    table.cell(narr, 0, 6,
+         "MSS: " + (mss_valid ? "VALID ✓" : "not confirmed") + "  |  Gate: " + (pd_gate_suppress ? "SUPP ⛔" : "clear ✓"),
+         text_color=mss_valid ? c_bull : pd_gate_suppress ? c_bear : color.silver, text_size=size.tiny)
+
+    // Entry zone
+    entry_str = not na(entry_high) ?
+         str.tostring(entry_high, "#.####") + " / " + str.tostring(entry_low, "#.####") : "—"
+    table.cell(narr, 0, 7, "Entry: " + entry_str, text_color=color.white, text_size=size.tiny)
+
+    // SL
+    sl_str = not na(sl_level) ?
+         str.tostring(sl_level, "#.####") + " (" + str.tostring(math.round(sl_distance_pips)) + "p)" : "—"
+    table.cell(narr, 0, 8, "SL: " + sl_str, text_color=c_bear, text_size=size.tiny)
+
+    // TP targets
+    table.cell(narr, 0, 9,
+         "TP1: " + (not na(tp1) ? str.tostring(tp1, "#.####") : "—") +
+         "  TP2: " + (not na(tp2) ? str.tostring(tp2, "#.####") : "—") +
+         "  TP3: " + (not na(tp3) ? str.tostring(tp3, "#.####") : "—"),
+         text_color=c_bull, text_size=size.tiny)
+
+    // Lot size
+    table.cell(narr, 0, 10,
+         "Lots: " + str.tostring(math.round(eff_lots * 100) / 100, "#.##") +
+         "  Risk: $" + str.tostring(math.round(eff_risk)) +
+         "  RM×" + str.tostring(math.round(m9_risk_mult * 10) / 10, "#.#"),
+         text_color=color.white, text_size=size.tiny)
+
+    // KNN confidence
+    conf_col = m9_confidence >= 70 ? c_bull : m9_confidence >= 50 ? c_neut : c_bear
+    table.cell(narr, 0, 11,
+         "KNN: " + str.tostring(math.round(m9_confidence)) + "% | " + m9_pattern + " | k-W:" + str.tostring(m9_k_wins) + "/" + str.tostring(i_k),
+         text_color=conf_col, text_size=size.tiny)
+
+    // Entry style
+    table.cell(narr, 0, 12, "Entry Style: " + aggressiveness,
+         text_color=color.silver, text_size=size.tiny)
+
+    // Divergence
+    table.cell(narr, 0, 13, div_present ? "⚡ Divergence confluence active" : "No divergence",
+         text_color=div_present ? color.purple : color.gray, text_size=size.tiny)
+
+    // Episode count
+    table.cell(narr, 0, 14, "KNN Episodes: " + str.tostring(ep_count) + "/" + str.tostring(i_max_ep),
+         text_color=color.gray, text_size=size.tiny)
+
+    // Separator
+    table.cell(narr, 0, 15, "─────────────────────────────",
+         text_color=color.new(#333333, 0), text_size=size.tiny)
+
+    // Public channel preview
+    table.cell(narr, 0, 16, pub, text_color=color.silver, text_size=size.tiny)
+
+    // Tier 2 preview
+    table.cell(narr, 0, 17, "TP1:" + (not na(tp1) ? str.tostring(tp1,"#.####") : "—") +
+         " TP2:" + (not na(tp2) ? str.tostring(tp2,"#.####") : "—") +
+         " TP3:" + (not na(tp3) ? str.tostring(tp3,"#.####") : "—"),
+         text_color=c_bull, text_size=size.tiny)
+
+    // Footer
+    table.cell(narr, 0, 18, "PIE-v1 | ADI © Emmanuel, Nairobi",
+         text_color=color.new(color.gray, 50), text_size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  PLOTS (for Data Window visibility)
+// ═══════════════════════════════════════════════════════════════
+plot(m9_confidence,  title="KNN Confidence (%)",   display=display.data_window)
+plot(m9_risk_mult,   title="KNN Risk Multiplier",  display=display.data_window)
+plot(ind_count,      title="Inducement Count",      display=display.data_window)
+plot(sl_distance_pips, title="SL Distance (pips)", display=display.data_window)
+plot(lot_size,       title="Base Lot Size",         display=display.data_window)
+plot(eff_lots,       title="Effective Lot Size",    display=display.data_window)
+plot(sig_type == "reversal" ? 2 : sig_type == "ipb_continuation" ? 1 : 0,
+     title="Signal Type (2=Rev 1=IPB 0=None)", display=display.data_window)
