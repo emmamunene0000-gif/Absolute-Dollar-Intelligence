@@ -344,22 +344,27 @@ if i_show_ind and not na(evil_c) and ph1_swept and not ph1_swept[1]
     label.new(bar_index, evil_c, "●",
          style=label.style_circle, color=c_neut, textcolor=c_neut, size=size.tiny)
 
-var line _ph1_ln = na
+// Ph1 / Ph2 sweep level markers — only latest kept, auto-delete on new sweep
+var line  _ph1_ln = na
+var label _ph1_lb = na
 if ph1_swept and not ph1_swept[1] and not na(ph1_lvl)
     line.delete(_ph1_ln)
+    label.delete(_ph1_lb)
     pc      = is_bull ? color.new(c_bull, 20) : color.new(c_bear, 20)
     _ph1_ln := line.new(bar_index, ph1_lvl, bar_index + 80, ph1_lvl,
          color=pc, style=line.style_dashed, width=2)
-    label.new(bar_index + 80, ph1_lvl, "x1",
+    _ph1_lb := label.new(bar_index + 80, ph1_lvl, "Ph1",
          style=label.style_label_left, color=color.new(pc, 50), textcolor=pc, size=size.tiny)
 
-var line _ph2_ln = na
+var line  _ph2_ln = na
+var label _ph2_lb = na
 if ph2_swept and not ph2_swept[1] and not na(ph2_lvl)
     line.delete(_ph2_ln)
+    label.delete(_ph2_lb)
     pc2     = is_bull ? c_bull : c_bear
     _ph2_ln := line.new(bar_index, ph2_lvl, bar_index + 80, ph2_lvl,
          color=pc2, style=line.style_solid, width=2)
-    label.new(bar_index + 80, ph2_lvl, "x2",
+    _ph2_lb := label.new(bar_index + 80, ph2_lvl, "Ph2",
          style=label.style_label_left, color=color.new(pc2, 50), textcolor=pc2, size=size.tiny)
 
 // ═══════════════════════════════════════════════════════════════
@@ -385,12 +390,14 @@ if not na(vl) and ph2_swept and barstate.isconfirmed
         rev_conf   := false
         ipb_rev    := 0
 
-var line _vl_ln = na
+var line  _vl_ln = na
+var label _vl_lb = na
 if not na(vl) and ph1_swept and not ph1_swept[1]
     line.delete(_vl_ln)
+    label.delete(_vl_lb)
     _vl_ln := line.new(bar_index, vl, bar_index + 60, vl,
          color=c_vl, style=line.style_dashed, width=2)
-    label.new(bar_index + 60, vl, "VL",
+    _vl_lb := label.new(bar_index + 60, vl, "VL",
          style=label.style_label_left, color=color.new(c_vl, 50), textcolor=c_vl, size=size.tiny)
 
 if i_show_mss and mss_valid and not mss_valid[1]
@@ -416,7 +423,8 @@ div_on   = div_bull or div_bear
 ph2_now  = not ph1_swept ? na : ind_cnt >= 2 ? 2 : ph2_swept and not mss_valid ? 3 : ph2_type
 
 rev_sig  = mss_valid and ph1_swept and ph2_swept and ob_v and not pd_suppress and barstate.isconfirmed
-ipb_sig  = ph1_swept and not mss_valid and not pd_suppress and (corr_leg or ind_cnt >= 1) and barstate.isconfirmed
+// IPB requires: Ph1 swept, valid OB present, price on correction leg, NOT suppressed by P/D gate
+ipb_sig  = ph1_swept and ob_v and corr_leg and not mss_valid and not pd_suppress and barstate.isconfirmed
 
 sig      = rev_sig ? "reversal" : ipb_sig ? "ipb" : "none"
 is_new   = sig != "none" and sig != sig[1]
@@ -447,6 +455,17 @@ f_min_lot() =>
 
 lot_base = sl_pips > 0.0 ? math.max(f_min_lot(), i_risk / (sl_pips * f_pip_val())) : 0.0
 
+// Position tool — only ONE set of lines kept alive at any time (var-tracked, deleted on new signal)
+var box   _pos_ent  = na
+var line  _pos_sl   = na
+var label _pos_sl_l = na
+var line  _pos_tp1  = na
+var label _pos_tp1_l = na
+var line  _pos_tp2  = na
+var label _pos_tp2_l = na
+var line  _pos_tp3  = na
+var label _pos_tp3_l = na
+
 if is_new and barstate.isconfirmed
     sc  = sig == "reversal" ? c_bull : c_neut
     lbl = sig == "reversal" ? (is_bull ? "▲ REVERSAL" : "▼ REVERSAL") : (is_bull ? "▶ IPB" : "◀ IPB")
@@ -455,35 +474,41 @@ if is_new and barstate.isconfirmed
          color=color.new(sc, 30), textcolor=color.white, size=size.normal)
 
     if i_show_pos
-        _ext = 60
-        // Entry zone box
+        // Wipe previous position tool before drawing new one
+        box.delete(_pos_ent)
+        line.delete(_pos_sl)
+        label.delete(_pos_sl_l)
+        line.delete(_pos_tp1)
+        label.delete(_pos_tp1_l)
+        line.delete(_pos_tp2)
+        label.delete(_pos_tp2_l)
+        line.delete(_pos_tp3)
+        label.delete(_pos_tp3_l)
+
+        _ext = 80
         if not na(ent_hi) and not na(ent_lo)
-            box.new(bar_index, ent_hi, bar_index + _ext, ent_lo,
+            _pos_ent := box.new(bar_index, ent_hi, bar_index + _ext, ent_lo,
                  border_color=color.new(sc, 20), bgcolor=color.new(sc, 82), border_width=1)
-        // SL — solid red, extends right
         if not na(sl_level)
-            line.new(bar_index, sl_level, bar_index + _ext, sl_level,
+            _pos_sl   := line.new(bar_index, sl_level, bar_index + _ext, sl_level,
                  color=c_bear, style=line.style_solid, width=2)
-            label.new(bar_index, sl_level, "SL  " + str.tostring(math.round(sl_pips)) + "p",
+            _pos_sl_l := label.new(bar_index, sl_level, "SL  " + str.tostring(math.round(sl_pips)) + "p",
                  style=is_bull ? label.style_label_upper_right : label.style_label_lower_right,
                  color=c_bear, textcolor=color.white, size=size.tiny)
-        // TP1 — 1:1
         if not na(tp1)
-            line.new(bar_index, tp1, bar_index + _ext, tp1,
-                 color=color.new(c_bull, 40), style=line.style_dashed, width=1)
-            label.new(bar_index + _ext, tp1, "TP1  1:1",
-                 style=label.style_label_left, color=color.new(c_bull, 50), textcolor=c_bull, size=size.tiny)
-        // TP2 — 1:2
+            _pos_tp1   := line.new(bar_index, tp1, bar_index + _ext, tp1,
+                 color=color.new(c_bull, 50), style=line.style_dashed, width=1)
+            _pos_tp1_l := label.new(bar_index + _ext, tp1, "TP1  1:1",
+                 style=label.style_label_left, color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
         if not na(tp2)
-            line.new(bar_index, tp2, bar_index + _ext, tp2,
-                 color=color.new(c_bull, 25), style=line.style_dashed, width=1)
-            label.new(bar_index + _ext, tp2, "TP2  1:2",
+            _pos_tp2   := line.new(bar_index, tp2, bar_index + _ext, tp2,
+                 color=color.new(c_bull, 30), style=line.style_dashed, width=1)
+            _pos_tp2_l := label.new(bar_index + _ext, tp2, "TP2  1:2",
                  style=label.style_label_left, color=color.new(c_bull, 40), textcolor=c_bull, size=size.tiny)
-        // TP3 — 1:3 (primary target)
         if not na(tp3)
-            line.new(bar_index, tp3, bar_index + _ext, tp3,
+            _pos_tp3   := line.new(bar_index, tp3, bar_index + _ext, tp3,
                  color=c_bull, style=line.style_solid, width=2)
-            label.new(bar_index + _ext, tp3, "TP3  1:3 ✦",
+            _pos_tp3_l := label.new(bar_index + _ext, tp3, "TP3  1:3 ✦",
                  style=label.style_label_left, color=color.new(c_bull, 20), textcolor=c_bull, size=size.small)
 
 if div_on and barstate.isconfirmed
