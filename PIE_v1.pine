@@ -179,8 +179,11 @@ f_imb(int i) =>
     i >= 1 and bar_index - i >= 1 ?
         high[i + 1] < low[i - 1] or low[i + 1] > high[i - 1] : false
 
-f_imp(int i) =>
-    math.abs(close[i] - open[i]) > ta.atr(14) * 0.65
+// ta.atr hoisted here so it runs on every bar (Pine CW10003/CW10004 compliance)
+atr14 = ta.atr(14)
+
+f_imp(int i, float a) =>
+    math.abs(close[i] - open[i]) > a * 0.65
 
 f_ind_below(float z) =>
     found = false
@@ -211,7 +214,7 @@ if barstate.isconfirmed
     if is_bull
         for i = 1 to i_ob
             if close[i] < open[i] and close[i - 1] > open[i - 1]
-                if f_imb(i) and f_imp(i) and f_ind_below(low[i])
+                if f_imb(i) and f_imp(i, atr14) and f_ind_below(low[i])
                     ob_v  := true
                     ob_t  := 0
                     ob_hi := open[i]
@@ -227,7 +230,7 @@ if barstate.isconfirmed
     if is_bear
         for i = 1 to i_ob
             if close[i] > open[i] and close[i - 1] < open[i - 1]
-                if f_imb(i) and f_imp(i) and f_ind_above(high[i])
+                if f_imb(i) and f_imp(i, atr14) and f_ind_above(high[i])
                     ob_v  := true
                     ob_t  := 0
                     ob_hi := high[i]
@@ -443,7 +446,7 @@ ent_lo = is_bull ? ob_lo : ob_hi
 // SL at end of manipulation sweep (beyond Phase 1)
 sl_pips = not na(ph1_lvl) and not na(ent_lo) ?
      math.abs(ent_lo - ph1_lvl) / syminfo.mintick / 10.0 :
-     ta.atr(14) / syminfo.mintick / 10.0
+     atr14 / syminfo.mintick / 10.0
 
 sl_level = is_bull ? ent_lo - sl_pips * syminfo.mintick * 10.0 :
                      ent_hi + sl_pips * syminfo.mintick * 10.0
