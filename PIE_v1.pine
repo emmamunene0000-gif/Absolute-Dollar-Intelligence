@@ -54,8 +54,7 @@ is_ldn_cl = tot >= 1200 and tot < 1260
 sess_id = is_asia ? 0 : is_fft ? 1 : is_ldn ? 2 : is_ny_op ? 3 : is_ny_tr ? 4 : is_ldn_cl ? 5 : na
 
 // MMM: ±30 min around 11:30, 12:30, 16:30, 17:30 EAT
-is_mmm = math.abs(tot - 690) <= 30 or math.abs(tot - 750) <= 30 or
-         math.abs(tot - 990) <= 30 or math.abs(tot - 1050) <= 30
+is_mmm = math.abs(tot - 690) <= 30 or math.abs(tot - 750) <= 30 or math.abs(tot - 990) <= 30 or math.abs(tot - 1050) <= 30
 
 if is_ldn and not is_ldn[1]
     line.new(bar_index, low * 0.9998, bar_index, high * 1.0002,
@@ -155,8 +154,7 @@ choch_cand = not na(sh1) and not na(sl1) and (
     (high > sh1 and close < sh1 and bos_bear) or
     (low  < sl1 and close > sl1 and bos_bull))
 
-corr_leg = (is_bear and not na(lpos) and close > lpos) or
-    (is_bull and not na(lpod) and close < lpod)
+corr_leg = (is_bear and not na(lpos) and close > lpos) or (is_bull and not na(lpod) and close < lpod)
 
 if bos_bull and barstate.isconfirmed
     label.new(bar_index, low,  "BoS▲", style=label.style_label_up,
@@ -546,8 +544,7 @@ f_knn(float[] qv) =>
         ic2  = math.round(array.get(qv, 7))
         sn   = array.from("Asia", "FFT", "Ldn", "NY", "NYTr", "LdnCl")
         pn   = array.from("ChoCh", "RstLiq", "2Ph1", "2ndMs")
-        pat := array.get(sn, math.min(5, si2)) + "/" + array.get(pn, math.min(3, pi2)) +
-               " ind#" + str.tostring(ic2)
+        pat := array.get(sn, math.min(5, si2)) + "/" + array.get(pn, math.min(3, pi2)) + " ind#" + str.tostring(ic2)
         rm  := math.min(1.5, math.max(0.5, conf / 100.0 * 1.5))
     [conf, pat, rm, kw]
 
@@ -581,27 +578,22 @@ s_bias = is_bull ? "BULLISH" : is_bear ? "BEARISH" : "RANGING"
 s_amd  = amd_ph == 0 ? "Accumulation" : amd_ph == 1 ? "Manipulation" : "Distribution"
 s_sig  = sig == "reversal" ? (is_bull ? "▲ REVERSAL BUY" : "▼ REVERSAL SELL") : sig == "ipb" ? (is_bull ? "▶ IPB BUY" : "◀ IPB SELL") : "— Watching"
 
-_t1 = "PIE-v1 | ADI WAR ROOM\n" +
-    "Sess: " + s_sess + (is_mmm ? " ⚡MMM" : "") + " | " + s_bias + "\n" +
-    "AMD: " + s_amd + " | Ind#" + str.tostring(ind_cnt) + "\n" +
-    "Ph1:" + (ph1_swept ? "swept✓" : "pending") +
-    " Ph2:" + (ph2_swept ? "swept✓" : "pending") + "\n" +
-    "MSS:" + (mss_valid ? "VALID✓" : "pending") +
-    " Gate:" + (pd_suppress ? "SUPP⛔" : "clear✓") + "\n" +
-    "Signal: " + s_sig + "\n" +
-    "Entry: " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") + "/" + str.tostring(ent_lo,"#.####") : "—") + "\n" +
-    "SL: " + (not na(sl_level) ? str.tostring(sl_level,"#.####") + "(" + str.tostring(math.round(sl_pips)) + "p)" : "—") + "\n" +
-    "TP1/2/3: " + (not na(tp1) ? str.tostring(tp1,"#.####") : "—") + "/" +
-                  (not na(tp2) ? str.tostring(tp2,"#.####") : "—") + "/" +
-                  (not na(tp3) ? str.tostring(tp3,"#.####") : "—") + "\n" +
-    "Lots: " + str.tostring(math.round(eff_lots * 100) / 100,"#.##") + " @ $" + str.tostring(math.round(eff_risk)) + "\n" +
-    "KNN: " + str.tostring(math.round(knn_conf)) + "% | " + knn_pat + "\n" +
-    "Entry style: " + aggr
+_t1_1  = "Sess: " + s_sess + (is_mmm ? " ⚡MMM" : "") + " | " + s_bias
+_t1_2  = "AMD: " + s_amd + " | Ind#" + str.tostring(ind_cnt)
+_t1_3  = "Ph1:" + (ph1_swept ? "swept✓" : "pending") + " Ph2:" + (ph2_swept ? "swept✓" : "pending")
+_t1_4  = "MSS:" + (mss_valid ? "VALID✓" : "pending") + " Gate:" + (pd_suppress ? "SUPP⛔" : "clear✓")
+_t1_5  = "Signal: " + s_sig
+_t1_6  = "Entry: " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") + "/" + str.tostring(ent_lo,"#.####") : "—")
+_t1_7  = "SL: " + (not na(sl_level) ? str.tostring(sl_level,"#.####") + "(" + str.tostring(math.round(sl_pips)) + "p)" : "—")
+_t1_8  = "TP1/2/3: " + (not na(tp1) ? str.tostring(tp1,"#.####") : "—") + "/" + (not na(tp2) ? str.tostring(tp2,"#.####") : "—") + "/" + (not na(tp3) ? str.tostring(tp3,"#.####") : "—")
+_t1_9  = "Lots: " + str.tostring(math.round(eff_lots * 100) / 100,"#.##") + " @ $" + str.tostring(math.round(eff_risk))
+_t1_10 = "KNN: " + str.tostring(math.round(knn_conf)) + "% | " + knn_pat
+_t1_11 = "Entry style: " + aggr
+_t1    = "PIE-v1 | ADI WAR ROOM\n" + _t1_1 + "\n" + _t1_2 + "\n" + _t1_3 + "\n" + _t1_4 + "\n" + _t1_5 + "\n" + _t1_6 + "\n" + _t1_7 + "\n" + _t1_8 + "\n" + _t1_9 + "\n" + _t1_10 + "\n" + _t1_11
 
-_pub_body = (is_bull ? "🟢 " : "🔴 ") + str.upper(sig) + " | " + s_sess + " | " + s_amd + "\n" +
-    "Entry " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") : "—") +
-    " SL " + (not na(sl_level) ? str.tostring(sl_level,"#.####") : "—") + "\n" +
-    "Full analysis in the War Room 🔐"
+_pub_l1   = (is_bull ? "🟢 " : "🔴 ") + str.upper(sig) + " | " + s_sess + " | " + s_amd
+_pub_l2   = "Entry " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") : "—") + " SL " + (not na(sl_level) ? str.tostring(sl_level,"#.####") : "—")
+_pub_body = _pub_l1 + "\n" + _pub_l2 + "\n" + "Full analysis in the War Room 🔐"
 _pub = sig != "none" ? _pub_body : "⏳ No signal | " + s_amd
 
 // ─── Alerts ───
