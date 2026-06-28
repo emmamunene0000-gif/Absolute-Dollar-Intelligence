@@ -596,24 +596,6 @@ _pub_l2   = "Entry " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") : "—") 
 _pub_body = _pub_l1 + "\n" + _pub_l2 + "\n" + "Full analysis in the War Room 🔐"
 _pub = sig != "none" ? _pub_body : "⏳ No signal | " + s_amd
 
-// ─── Alerts ───
-// alertcondition requires const string — dynamic War Room narrative delivered via alert()
-alertcondition(is_new and sig == "reversal", title="PIE-v1 REVERSAL",  message="PIE-v1 REVERSAL signal fired")
-alertcondition(is_new and sig == "ipb",      title="PIE-v1 IPB",       message="PIE-v1 IPB signal fired")
-alertcondition(sig == "none",                title="PIE-v1 No Trade",  message="PIE-v1 no signal this bar")
-alertcondition(sig != "none" and not na(tp1) and (is_bull ? high >= tp1 : low <= tp1), title="PIE-v1 TP1 Hit", message="PIE-v1 TP1 hit")
-alertcondition(sig != "none" and not na(tp2) and (is_bull ? high >= tp2 : low <= tp2), title="PIE-v1 TP2 Hit", message="PIE-v1 TP2 hit")
-
-// Full dynamic War Room narrative pushed via alert() — no const string restriction
-if is_new and sig == "reversal"
-    alert(_t1, alert.freq_once_per_bar_close)
-if is_new and sig == "ipb"
-    alert(_t1, alert.freq_once_per_bar_close)
-if sig != "none" and not na(tp1) and (is_bull ? high >= tp1 : low <= tp1)
-    alert("TP1 | " + _t1, alert.freq_once_per_bar_close)
-if sig == "none"
-    alert(s_sess + " | " + s_amd + " | No trade", alert.freq_once_per_bar_close)
-
 // ─── Dashboard table ───
 var table dash = table.new(position.top_right, 2, 17,
      bgcolor=color.new(#0a0a0a, 5), border_width=1, border_color=#222222)
