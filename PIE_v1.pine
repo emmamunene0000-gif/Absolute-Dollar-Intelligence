@@ -8,16 +8,24 @@ indicator("PIE-v1 | 2-Phase Inducement Engine — ADI", overlay=true,
 // ═══════════════════════════════════════════════════════════════
 //  INPUTS
 // ═══════════════════════════════════════════════════════════════
-i_risk   = input.float(50.0, "Dollar Risk ($)",                   group="Risk", minval=1.0)
-i_max_ep = input.int(500,    "KNN Max Episodes",                  group="Risk", minval=50)
-i_k      = input.int(7,      "KNN k Neighbors",                   group="Risk", minval=3, maxval=21)
-i_log    = input.int(9,      "Log Outcome (0=L 1=W 2=P 9=Skip)", group="Risk", minval=0, maxval=9)
+i_risk    = input.float(50.0, "Dollar Risk ($)",                   group="Risk", minval=1.0)
+i_atr_sl  = input.float(1.5,  "ATR SL Multiplier",                group="Risk", minval=0.5, maxval=5.0, step=0.25)
+i_max_ep  = input.int(500,    "KNN Max Episodes",                  group="Risk", minval=50)
+i_k       = input.int(7,      "KNN k Neighbors",                   group="Risk", minval=3, maxval=21)
+i_log     = input.int(9,      "Log Outcome (0=L 1=W 2=P 9=Skip)", group="Risk", minval=0, maxval=9)
 
-i_show_sess = input.bool(true, "Show Asia Box",   group="Sessions")
-i_show_mmm  = input.bool(true, "Show MMM Window", group="Sessions")
+i_show_sess = input.bool(true,  "Show Asia Box",      group="Sessions")
+i_show_mmm  = input.bool(true,  "Show MMM Window",    group="Sessions")
 
-i_swing = input.int(10, "Swing Lookback", group="Structure", minval=3)
-i_ob    = input.int(20, "OB Lookback",   group="Structure", minval=10)
+i_auto_swing = input.bool(true, "Auto Swing (TF-adaptive)", group="Structure")
+i_swing      = input.int(10,    "Swing Lookback (manual)",  group="Structure", minval=3)
+i_ob         = input.int(20,    "OB Lookback",              group="Structure", minval=10)
+
+i_show_bos  = input.bool(false, "Show BoS Labels",        group="Labels")
+i_show_mss  = input.bool(true,  "Show MSS Label",         group="Labels")
+i_show_ob_l = input.bool(true,  "Show OB Zone Label",     group="Labels")
+i_show_ind  = input.bool(true,  "Show Inducement Dot",    group="Labels")
+i_show_pos  = input.bool(true,  "Show Position Tool",     group="Labels")
 
 i_htf  = input.timeframe("240", "HTF Timeframe", group="HTF")
 i_bias = input.string("Auto",   "Bias Override",  group="HTF",
@@ -130,11 +138,15 @@ ct_ok      = cycle_type == 1 or cycle_type == 2
 // ═══════════════════════════════════════════════════════════════
 //  M4 — STRUCTURE ENGINE
 // ═══════════════════════════════════════════════════════════════
+// TF-adaptive swing: M1/M5→5, M15/M30→7, H1/H4→10, D+→15
+_tf_s   = timeframe.in_seconds()
+sw_eff  = i_auto_swing ? (_tf_s <= 300 ? 5 : _tf_s <= 1800 ? 7 : _tf_s <= 14400 ? 10 : 15) : i_swing
+
 var float sh1 = na
 var float sl1 = na
 
-_ph = ta.pivothigh(high, i_swing, i_swing)
-_pl = ta.pivotlow(low,   i_swing, i_swing)
+_ph = ta.pivothigh(high, sw_eff, sw_eff)
+_pl = ta.pivotlow(low,   sw_eff, sw_eff)
 if not na(_ph)
     sh1 := _ph
 if not na(_pl)
@@ -156,10 +168,10 @@ choch_cand = not na(sh1) and not na(sl1) and (
 
 corr_leg = (is_bear and not na(lpos) and close > lpos) or (is_bull and not na(lpod) and close < lpod)
 
-if bos_bull and barstate.isconfirmed
+if i_show_bos and bos_bull and barstate.isconfirmed
     label.new(bar_index, low,  "BoS▲", style=label.style_label_up,
          color=color.new(c_bull, 70), textcolor=c_bull, size=size.tiny)
-if bos_bear and barstate.isconfirmed
+if i_show_bos and bos_bear and barstate.isconfirmed
     label.new(bar_index, high, "BoS▼", style=label.style_label_down,
          color=color.new(c_bear, 70), textcolor=c_bear, size=size.tiny)
 
@@ -250,9 +262,10 @@ if ob_v and barstate.isconfirmed and not na(ob_hi)
     _ob_box := box.new(bar_index - i_ob, ob_hi, bar_index + 50, ob_lo,
          border_color=bc, bgcolor=color.new(bc, 82))
     ot = ob_t == 0 ? "ENG" : ob_t == 2 ? "WCK" : ob_t == 3 ? "SMT⚠" : "OB"
-    label.new(bar_index - i_ob, ob_hi, (is_bull ? "DEM " : "SUP ") + ot,
-         style=label.style_label_right, color=color.new(bc, 70),
-         textcolor=color.white, size=size.tiny)
+    if i_show_ob_l
+        label.new(bar_index - i_ob, ob_hi, (is_bull ? "DEM " : "SUP ") + ot,
+             style=label.style_label_right, color=color.new(bc, 70),
+             textcolor=color.white, size=size.tiny)
 
 // ═══════════════════════════════════════════════════════════════
 //  M6 — INDUCEMENT LAYER
@@ -327,7 +340,7 @@ amd_ph  := not ph1_swept ? 0 : ph1_swept and not ph2_swept ? 1 : 2
 if ph1_swept
     ipb_rev := bos_bull and is_bull ? 1 : bos_bear and is_bear ? 1 : choch_cand ? 2 : 0
 
-if not na(evil_c) and ph1_swept and not ph1_swept[1]
+if i_show_ind and not na(evil_c) and ph1_swept and not ph1_swept[1]
     label.new(bar_index, evil_c, "●",
          style=label.style_circle, color=c_neut, textcolor=c_neut, size=size.tiny)
 
@@ -380,7 +393,7 @@ if not na(vl) and ph1_swept and not ph1_swept[1]
     label.new(bar_index + 60, vl, "VL",
          style=label.style_label_left, color=color.new(c_vl, 50), textcolor=c_vl, size=size.tiny)
 
-if mss_valid and not mss_valid[1]
+if i_show_mss and mss_valid and not mss_valid[1]
     label.new(bar_index, is_bull ? low : high, "MSS✓",
          style=is_bull ? label.style_label_up : label.style_label_down,
          color=color.new(c_bull, 50), textcolor=c_bull, size=size.small)
@@ -411,13 +424,16 @@ is_new   = sig != "none" and sig != sig[1]
 ent_hi   = is_bull ? ob_hi : ob_lo
 ent_lo   = is_bull ? ob_lo : ob_hi
 
-sl_pips  = not na(ph1_lvl) and not na(ent_lo) ? math.abs(ent_lo - ph1_lvl) / syminfo.mintick / 10.0 : atr14 / syminfo.mintick / 10.0
-sl_level = is_bull ? ent_lo - sl_pips * syminfo.mintick * 10.0 : ent_hi + sl_pips * syminfo.mintick * 10.0
+// ATR-based SL — clean, TF-adaptive, zero-repaint (atr14 hoisted to script scope)
+sl_dist  = atr14 * i_atr_sl
+sl_level = is_bull ? (not na(ent_lo) ? ent_lo - sl_dist : close - sl_dist) : (not na(ent_hi) ? ent_hi + sl_dist : close + sl_dist)
+sl_pips  = sl_dist / syminfo.mintick / 10.0
 
-rr  = math.abs(ent_hi - sl_level)
-tp1 = is_bull ? ent_hi + rr * 1.5 : ent_lo - rr * 1.5
-tp2 = is_bull ? ent_hi + rr * 2.5 : ent_lo - rr * 2.5
-tp3 = is_bull ? ent_hi + rr * 4.0 : ent_lo - rr * 4.0
+// 1:3 RR — TP1=1R, TP2=2R, TP3=3R
+rr  = sl_dist
+tp1 = is_bull ? (not na(ent_hi) ? ent_hi + rr * 1.0 : close + rr) : (not na(ent_lo) ? ent_lo - rr * 1.0 : close - rr)
+tp2 = is_bull ? (not na(ent_hi) ? ent_hi + rr * 2.0 : close + rr * 2.0) : (not na(ent_lo) ? ent_lo - rr * 2.0 : close - rr * 2.0)
+tp3 = is_bull ? (not na(ent_hi) ? ent_hi + rr * 3.0 : close + rr * 3.0) : (not na(ent_lo) ? ent_lo - rr * 3.0 : close - rr * 3.0)
 
 aggr = ph2_now == 3 ? "LIMIT — near-zero post-tap" : ph2_now == 2 ? "LIMIT — minimal post-tap" : ph2_now == 1 ? "5s/15s fail or LIMIT" : "Wait 5s/15s S/D fail"
 
@@ -436,24 +452,39 @@ if is_new and barstate.isconfirmed
     lbl = sig == "reversal" ? (is_bull ? "▲ REVERSAL" : "▼ REVERSAL") : (is_bull ? "▶ IPB" : "◀ IPB")
     label.new(bar_index, is_bull ? low : high, lbl,
          style=is_bull ? label.style_label_up : label.style_label_down,
-         color=color.new(sc, 40), textcolor=sc, size=size.normal)
-    if not na(sl_level)
-        line.new(bar_index, sl_level, bar_index + 50, sl_level,
-             color=color.new(c_bear, 20), style=line.style_dotted, width=2)
-        label.new(bar_index + 50, sl_level, "SL",
-             style=label.style_label_left, color=color.new(c_bear, 60), textcolor=c_bear, size=size.tiny)
-    if not na(tp1)
-        line.new(bar_index, tp1, bar_index + 70, tp1, color=color.new(c_bull, 40), style=line.style_dashed)
-        label.new(bar_index + 70, tp1, "TP1",
-             style=label.style_label_left, color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
-    if not na(tp2)
-        line.new(bar_index, tp2, bar_index + 90, tp2, color=color.new(c_bull, 30), style=line.style_dashed)
-        label.new(bar_index + 90, tp2, "TP2",
-             style=label.style_label_left, color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
-    if not na(tp3)
-        line.new(bar_index, tp3, bar_index + 110, tp3, color=color.new(c_bull, 20), style=line.style_dashed)
-        label.new(bar_index + 110, tp3, "TP3",
-             style=label.style_label_left, color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+         color=color.new(sc, 30), textcolor=color.white, size=size.normal)
+
+    if i_show_pos
+        _ext = 60
+        // Entry zone box
+        if not na(ent_hi) and not na(ent_lo)
+            box.new(bar_index, ent_hi, bar_index + _ext, ent_lo,
+                 border_color=color.new(sc, 20), bgcolor=color.new(sc, 82), border_width=1)
+        // SL — solid red, extends right
+        if not na(sl_level)
+            line.new(bar_index, sl_level, bar_index + _ext, sl_level,
+                 color=c_bear, style=line.style_solid, width=2)
+            label.new(bar_index, sl_level, "SL  " + str.tostring(math.round(sl_pips)) + "p",
+                 style=is_bull ? label.style_label_upper_right : label.style_label_lower_right,
+                 color=c_bear, textcolor=color.white, size=size.tiny)
+        // TP1 — 1:1
+        if not na(tp1)
+            line.new(bar_index, tp1, bar_index + _ext, tp1,
+                 color=color.new(c_bull, 40), style=line.style_dashed, width=1)
+            label.new(bar_index + _ext, tp1, "TP1  1:1",
+                 style=label.style_label_left, color=color.new(c_bull, 50), textcolor=c_bull, size=size.tiny)
+        // TP2 — 1:2
+        if not na(tp2)
+            line.new(bar_index, tp2, bar_index + _ext, tp2,
+                 color=color.new(c_bull, 25), style=line.style_dashed, width=1)
+            label.new(bar_index + _ext, tp2, "TP2  1:2",
+                 style=label.style_label_left, color=color.new(c_bull, 40), textcolor=c_bull, size=size.tiny)
+        // TP3 — 1:3 (primary target)
+        if not na(tp3)
+            line.new(bar_index, tp3, bar_index + _ext, tp3,
+                 color=c_bull, style=line.style_solid, width=2)
+            label.new(bar_index + _ext, tp3, "TP3  1:3 ✦",
+                 style=label.style_label_left, color=color.new(c_bull, 20), textcolor=c_bull, size=size.small)
 
 if div_on and barstate.isconfirmed
     label.new(bar_index, div_bull ? low : high, div_bull ? "DIV▲" : "DIV▼",
