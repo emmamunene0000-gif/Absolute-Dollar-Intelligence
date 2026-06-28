@@ -60,10 +60,10 @@ is_mmm = math.abs(tot - 690)  <= 30 or math.abs(tot - 750)  <= 30 or
 // Session separator lines
 if is_ldn and not is_ldn[1]
     line.new(bar_index, low * 0.9998, bar_index, high * 1.0002,
-         color=#00bcd4, width=2, style=line.style_dashed, extend=line.extend.both)
+         color=#00bcd4, width=2, style=line.style_dashed, extend=extend.both)
 if is_ny_op and not is_ny_op[1]
     line.new(bar_index, low * 0.9998, bar_index, high * 1.0002,
-         color=#ce93d8, width=2, style=line.style_dashed, extend=line.extend.both)
+         color=#ce93d8, width=2, style=line.style_dashed, extend=extend.both)
 
 bgcolor(i_show_mmm and is_mmm ? color.new(c_neut, 88) : na, title="MMM Window")
 
@@ -94,8 +94,7 @@ if is_fft and not is_fft[1] and not na(_ah)
     asia_pip := p
     sh = high > _ah or close > _ah
     sl = low  < _al or close < _al
-    asia_cls :=
-        sh and sl ? 0 :
+    asia_cls := sh and sl ? 0 :
         sh or  sl ? 1 :
         p > 40    ? 4 :
         p < 40    ? 5 : 6
@@ -129,8 +128,7 @@ is_bear = i_bias == "Bearish" or (i_bias == "Auto" and htf_bear)
 eat_dow = dayofweek(time, "UTC+3")
 week_ph = eat_dow == dayofweek.monday ? 0 : eat_dow == dayofweek.friday ? 2 : 1
 
-cycle_type =
-    (is_bull or is_bear) and (htf_bull or htf_bear) ? 0 :
+cycle_type = (is_bull or is_bear) and (htf_bull or htf_bear) ? 0 :
     is_bull or is_bear ? 1 : 2
 
 daily_var = not na(asia_cls) and asia_cls == 0 ? 2 :
@@ -164,8 +162,7 @@ choch_cand = not na(sh1) and not na(sl1) and (
     (high > sh1 and close < sh1 and bos_bear) or
     (low  < sl1 and close > sl1 and bos_bull))
 
-corr_leg =
-    (is_bear and not na(lpos) and close > lpos) or
+corr_leg = (is_bear and not na(lpos) and close > lpos) or
     (is_bull and not na(lpod) and close < lpod)
 
 if bos_bull and barstate.isconfirmed
@@ -340,8 +337,7 @@ if ph2_swept and not ph2_swept[1]
     ind_cnt += 1
 
 // AMD phase
-amd_ph :=
-    not ph1_swept               ? 0 :
+amd_ph := not ph1_swept ? 0 :
     ph1_swept and not ph2_swept ? 1 : 2
 
 // IPB vs Reversal
