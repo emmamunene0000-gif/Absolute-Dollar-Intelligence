@@ -1,0 +1,789 @@
+// PIE-v1 | 2-Phase Inducement Engine — All-in-One Suite
+// Absolute Dollar Intelligence (ADI) | Emmanuel, Nairobi EAT/UTC+3
+// Based on: VectorFX 2-Phase Inducement Trap Theorem
+//@version=6
+indicator("PIE-v1 | 2-Phase Inducement Engine — ADI", overlay=true,
+     max_lines_count=500, max_boxes_count=300, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════
+i_risk   = input.float(50.0, "Dollar Risk ($)",              group="Risk", minval=1.0)
+i_max_ep = input.int(500,    "KNN Max Episodes",             group="Risk", minval=50)
+i_k      = input.int(7,      "KNN k Neighbors",              group="Risk", minval=3, maxval=21)
+i_log    = input.int(9,      "Log Outcome (0=L 1=W 2=P 9=Skip)", group="Risk", minval=0, maxval=9)
+
+i_show_sess = input.bool(true, "Show Asia Box",   group="Sessions")
+i_show_mmm  = input.bool(true, "Show MMM Window", group="Sessions")
+
+i_swing = input.int(10, "Swing Lookback", group="Structure", minval=3)
+i_ob    = input.int(20, "OB Lookback",   group="Structure", minval=10)
+
+i_htf  = input.timeframe("240", "HTF Timeframe",  group="HTF")
+i_bias = input.string("Auto",   "Bias Override",   group="HTF",
+         options=["Auto","Bullish","Bearish","Ranging"])
+
+i_broker = input.string("Pepperstone", "Broker",     group="Instrument",
+           options=["Pepperstone","Deriv"])
+i_inst   = input.string("Auto",        "Instrument", group="Instrument",
+           options=["Auto","XAUUSD","GBPUSD","V75","V50","V25","V10","Step"])
+
+i_div   = input.bool(true, "Divergence Confluence", group="Confluence")
+i_rsi_l = input.int(14,   "RSI Length",             group="Confluence")
+
+c_bull = input.color(#00e676, "Bullish",      group="Colors")
+c_bear = input.color(#ff1744, "Bearish",      group="Colors")
+c_neut = input.color(#ffd600, "Neutral/MMM",  group="Colors")
+c_vl   = input.color(#ff9800, "Vector Level", group="Colors")
+c_asia = input.color(#546e7a, "Asia Range",   group="Colors")
+
+// ═══════════════════════════════════════════════════════════════
+//  M1 — SESSION ENGINE  (EAT = UTC+3, no DST)
+// ═══════════════════════════════════════════════════════════════
+eat_h = hour(time,   "UTC+3")
+eat_m = minute(time, "UTC+3")
+tot   = eat_h * 60 + eat_m
+
+is_asia   = tot >= 180  and tot < 600
+is_fft    = tot >= 600  and tot < 660
+is_ldn    = tot >= 660  and tot < 720
+is_ny_op  = tot >= 960  and tot < 1020
+is_ny_tr  = tot >= 1020 and tot < 1080
+is_ldn_cl = tot >= 1200 and tot < 1260
+
+sess_id = is_asia ? 0 : is_fft ? 1 : is_ldn ? 2 : is_ny_op ? 3 : is_ny_tr ? 4 : is_ldn_cl ? 5 : na
+
+// MMM: ±30 min around 11:30, 12:30, 16:30, 17:30 EAT
+is_mmm = math.abs(tot - 690)  <= 30 or math.abs(tot - 750)  <= 30 or
+         math.abs(tot - 990)  <= 30 or math.abs(tot - 1050) <= 30
+
+// Session separator lines
+if is_ldn and not is_ldn[1]
+    line.new(bar_index, low * 0.9998, bar_index, high * 1.0002,
+         color=#00bcd4, width=2, style=line.style_dashed, extend=extend.both)
+if is_ny_op and not is_ny_op[1]
+    line.new(bar_index, low * 0.9998, bar_index, high * 1.0002,
+         color=#ce93d8, width=2, style=line.style_dashed, extend=extend.both)
+
+bgcolor(i_show_mmm and is_mmm ? color.new(c_neut, 88) : na, title="MMM Window")
+
+// ═══════════════════════════════════════════════════════════════
+//  M2 — ASIA RANGE ANALYZER
+// ═══════════════════════════════════════════════════════════════
+var float asia_hi  = na
+var float asia_lo  = na
+var float asia_mid = na
+var float asia_pip = na
+var int   asia_cls = na
+var float _ah      = na
+var float _al      = na
+
+if is_asia and not is_asia[1]
+    _ah := na
+    _al := na
+
+if is_asia
+    _ah := na(_ah) ? high : math.max(_ah, high)
+    _al := na(_al) ? low  : math.min(_al, low)
+
+if is_fft and not is_fft[1] and not na(_ah)
+    asia_hi  := _ah
+    asia_lo  := _al
+    asia_mid := (_ah + _al) / 2.0
+    p = (_ah - _al) / syminfo.mintick / 10.0
+    asia_pip := p
+    sh = high > _ah or close > _ah
+    sl = low  < _al or close < _al
+    asia_cls := sh and sl ? 0 :
+        sh or  sl ? 1 :
+        p > 40    ? 4 :
+        p < 40    ? 5 : 6
+
+var box  _ab = na
+var line _am = na
+if is_fft and not is_fft[1] and not na(asia_hi) and i_show_sess
+    box.delete(_ab)
+    line.delete(_am)
+    _ab := box.new(bar_index - 1, asia_hi, bar_index + 200, asia_lo,
+         border_color=color.new(c_asia, 0), bgcolor=color.new(c_asia, 82))
+    _am := line.new(bar_index - 1, asia_mid, bar_index + 200, asia_mid,
+         color=color.new(c_asia, 50), style=line.style_dashed)
+
+// ═══════════════════════════════════════════════════════════════
+//  HTF BIAS + M3 DAILY CYCLE
+// ═══════════════════════════════════════════════════════════════
+htf_c = request.security(syminfo.tickerid, i_htf, close,
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htf_hi_20 = request.security(syminfo.tickerid, i_htf, ta.highest(high, 20),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+htf_lo_20 = request.security(syminfo.tickerid, i_htf, ta.lowest(low, 20),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+htf_bull = htf_c > htf_c[3] and htf_c[3] > htf_c[6]
+htf_bear = htf_c < htf_c[3] and htf_c[3] < htf_c[6]
+
+is_bull = i_bias == "Bullish" or (i_bias == "Auto" and htf_bull)
+is_bear = i_bias == "Bearish" or (i_bias == "Auto" and htf_bear)
+
+eat_dow = dayofweek(time, "UTC+3")
+week_ph = eat_dow == dayofweek.monday ? 0 : eat_dow == dayofweek.friday ? 2 : 1
+
+cycle_type = (is_bull or is_bear) and (htf_bull or htf_bear) ? 0 :
+    is_bull or is_bear ? 1 : 2
+
+daily_var = not na(asia_cls) and asia_cls == 0 ? 2 :
+            not na(asia_cls) and asia_cls == 1 ? 1 : 0
+ct_ok     = cycle_type == 1 or cycle_type == 2
+
+// ═══════════════════════════════════════════════════════════════
+//  M4 — STRUCTURE ENGINE
+// ═══════════════════════════════════════════════════════════════
+var float sh1 = na
+var float sl1 = na
+
+_ph = ta.pivothigh(high, i_swing, i_swing)
+_pl = ta.pivotlow(low,   i_swing, i_swing)
+if not na(_ph)
+    sh1 := _ph
+if not na(_pl)
+    sl1 := _pl
+
+bos_bull = not na(sh1) and close[1] <= sh1 and close > sh1
+bos_bear = not na(sl1) and close[1] >= sl1 and close < sl1
+
+var float lpod = na
+var float lpos = na
+if bos_bull and not na(sl1)
+    lpod := sl1
+if bos_bear and not na(sh1)
+    lpos := sh1
+
+choch_cand = not na(sh1) and not na(sl1) and (
+    (high > sh1 and close < sh1 and bos_bear) or
+    (low  < sl1 and close > sl1 and bos_bull))
+
+corr_leg = (is_bear and not na(lpos) and close > lpos) or
+    (is_bull and not na(lpod) and close < lpod)
+
+if bos_bull and barstate.isconfirmed
+    label.new(bar_index, low,  "BoS▲", style=label.style_label_up,
+         color=color.new(c_bull, 70), textcolor=c_bull, size=size.tiny)
+if bos_bear and barstate.isconfirmed
+    label.new(bar_index, high, "BoS▼", style=label.style_label_down,
+         color=color.new(c_bear, 70), textcolor=c_bear, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  M5 — ORDERBLOCK VALIDATOR  (3-rule binary gate)
+// ═══════════════════════════════════════════════════════════════
+f_imb(int i) =>
+    i >= 1 and bar_index - i >= 1 ?
+        high[i + 1] < low[i - 1] or low[i + 1] > high[i - 1] : false
+
+f_imp(int i) =>
+    math.abs(close[i] - open[i]) > ta.atr(14) * 0.65
+
+f_ind_below(float z) =>
+    found = false
+    for j = 1 to i_ob
+        if low[j] < z
+            found := true
+            break
+    found
+
+f_ind_above(float z) =>
+    found = false
+    for j = 1 to i_ob
+        if high[j] > z
+            found := true
+            break
+    found
+
+var bool  ob_v  = false
+var int   ob_t  = na
+var float ob_hi = na
+var float ob_lo = na
+
+if barstate.isconfirmed
+    ob_v  := false
+    ob_t  := na
+    ob_hi := na
+    ob_lo := na
+    if is_bull
+        for i = 1 to i_ob
+            if close[i] < open[i] and close[i - 1] > open[i - 1]
+                if f_imb(i) and f_imp(i) and f_ind_below(low[i])
+                    ob_v  := true
+                    ob_t  := 0
+                    ob_hi := open[i]
+                    ob_lo := low[i]
+                    break
+                wk = close[i] - low[i]
+                if wk > math.abs(close[i] - open[i]) * 2 and f_imb(i) and f_ind_below(low[i])
+                    ob_v  := true
+                    ob_t  := 2
+                    ob_hi := open[i]
+                    ob_lo := low[i] + wk * 0.5
+                    break
+    if is_bear
+        for i = 1 to i_ob
+            if close[i] > open[i] and close[i - 1] < open[i - 1]
+                if f_imb(i) and f_imp(i) and f_ind_above(high[i])
+                    ob_v  := true
+                    ob_t  := 0
+                    ob_hi := high[i]
+                    ob_lo := open[i]
+                    break
+                wk = high[i] - close[i]
+                if wk > math.abs(close[i] - open[i]) * 2 and f_imb(i) and f_ind_above(high[i])
+                    ob_v  := true
+                    ob_t  := 2
+                    ob_hi := high[i] - wk * 0.5
+                    ob_lo := open[i]
+                    break
+    // SMT: OB found but no inducement → type 3 warning
+    if ob_v
+        no_ind = is_bull ? not f_ind_below(ob_lo) : not f_ind_above(ob_hi)
+        if no_ind
+            ob_t := 3
+
+slight_mit = ob_v and not na(ob_hi) and not na(ob_lo) and (
+    is_bull ? (low <= ob_hi and low >= ob_lo and close > ob_hi) :
+              (high >= ob_lo and high <= ob_hi and close < ob_lo))
+
+var box _ob_box = na
+if ob_v and barstate.isconfirmed and not na(ob_hi)
+    box.delete(_ob_box)
+    bc = is_bull ? c_bull : c_bear
+    _ob_box := box.new(bar_index - i_ob, ob_hi, bar_index + 50, ob_lo,
+         border_color=bc, bgcolor=color.new(bc, 82))
+    ot = ob_t == 0 ? "ENG" : ob_t == 2 ? "WCK" : ob_t == 3 ? "SMT⚠" : "OB"
+    label.new(bar_index - i_ob, ob_hi, (is_bull ? "DEM " : "SUP ") + ot,
+         style=label.style_label_right, color=color.new(bc, 70),
+         textcolor=color.white, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  M6 — INDUCEMENT LAYER
+// ═══════════════════════════════════════════════════════════════
+var float ph1_lvl   = na
+var int   ph1_type  = na
+var float ph2_lvl   = na
+var int   ph2_type  = na
+var int   ind_cnt   = 0
+var int   amd_ph    = 0
+var int   ipb_rev   = 2
+var float evil_c    = na
+var bool  ph1_swept = false
+var bool  ph2_swept = false
+var bool  choch_valid = false
+var bool  choch_smt   = false
+
+ph1_type_now = timeframe.in_seconds() / 60 <= 1 ? 0 :
+               timeframe.in_seconds() / 60 <= 5 ? 1 : 2
+
+// Detect Phase 1 level from OB
+if ob_v and barstate.isconfirmed
+    ph1_type := ph1_type_now
+    if is_bull and not na(ob_lo)
+        for i = 1 to i_ob
+            if low[i] < ob_lo
+                ph1_lvl := low[i]
+                evil_c  := low[i]
+                break
+    if is_bear and not na(ob_hi)
+        for i = 1 to i_ob
+            if high[i] > ob_hi
+                ph1_lvl := high[i]
+                evil_c  := high[i]
+                break
+
+// Phase 1 sweep
+if not na(ph1_lvl)
+    ph1_swept := is_bull ? low <= ph1_lvl : high >= ph1_lvl
+
+// Phase 2 type (post Phase 1 sweep)
+if ph1_swept and not ph2_swept and barstate.isconfirmed
+    if choch_cand
+        ph2_type    := 0
+        ph2_lvl     := is_bull ? sl1 : sh1
+        choch_valid := true
+    else if slight_mit
+        ph2_type := 1
+        ph2_lvl  := is_bull ? ob_lo : ob_hi
+    else if ind_cnt >= 2
+        ph2_type := 2
+        ph2_lvl  := ph1_lvl
+    else
+        near = not na(ob_hi) and not na(ob_lo) and (
+            is_bull ? (low <= ob_hi * 1.001 and close > ob_hi) :
+                      (high >= ob_lo * 0.999 and close < ob_lo))
+        ph2_type := near ? 3 : 0
+        ph2_lvl  := near ? (is_bull ? ob_lo : ob_hi) : na
+
+// Phase 2 sweep
+if not na(ph2_lvl)
+    ph2_swept := is_bull ? low <= ph2_lvl : high >= ph2_lvl
+
+// ChoCh validity gate (needs inducement)
+if choch_cand
+    if not na(ph1_lvl)
+        choch_valid := true
+    else
+        choch_smt := true
+
+// Inducement count
+if ph1_swept and not ph1_swept[1]
+    ind_cnt += 1
+if ph2_swept and not ph2_swept[1]
+    ind_cnt += 1
+
+// AMD phase
+amd_ph := not ph1_swept ? 0 :
+    ph1_swept and not ph2_swept ? 1 : 2
+
+// IPB vs Reversal
+if ph1_swept
+    ipb_rev := bos_bull and is_bull ? 1 :
+               bos_bear and is_bear ? 1 :
+               choch_cand ? 2 : 0
+
+// Evil candle marker
+if not na(evil_c) and ph1_swept and not ph1_swept[1]
+    label.new(bar_index, evil_c, "●",
+         style=label.style_circle, color=c_neut, textcolor=c_neut, size=size.tiny)
+
+// Phase 1 dashed line (x1)
+var line _ph1_ln = na
+if ph1_swept and not ph1_swept[1] and not na(ph1_lvl)
+    line.delete(_ph1_ln)
+    pc = is_bull ? color.new(c_bull, 20) : color.new(c_bear, 20)
+    _ph1_ln := line.new(bar_index, ph1_lvl, bar_index + 80, ph1_lvl,
+         color=pc, style=line.style_dashed, width=2)
+    label.new(bar_index + 80, ph1_lvl, "x1",
+         style=label.style_label_left, color=color.new(pc, 50), textcolor=pc, size=size.tiny)
+
+// Phase 2 solid line (x2)
+var line _ph2_ln = na
+if ph2_swept and not ph2_swept[1] and not na(ph2_lvl)
+    line.delete(_ph2_ln)
+    pc2 = is_bull ? c_bull : c_bear
+    _ph2_ln := line.new(bar_index, ph2_lvl, bar_index + 80, ph2_lvl,
+         color=pc2, style=line.style_solid, width=2)
+    label.new(bar_index + 80, ph2_lvl, "x2",
+         style=label.style_label_left, color=color.new(pc2, 50), textcolor=pc2, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  M7 — VECTOR LEVEL TRACKER
+// ═══════════════════════════════════════════════════════════════
+var float vl         = na
+var bool  mss_valid  = false
+var bool  manip_conf = false
+var bool  rev_conf   = false
+
+if ph1_swept and not ph1_swept[1] and ob_v
+    vl := is_bull ? ob_lo : ob_hi
+
+if not na(vl) and ph2_swept and barstate.isconfirmed
+    vl_hit = is_bull ? (low <= vl and close > vl) or close > vl :
+                       (high >= vl and close < vl) or close < vl
+    if vl_hit
+        mss_valid  := true
+        manip_conf := true
+        rev_conf   := amd_ph == 2
+    else
+        mss_valid  := false
+        manip_conf := false
+        rev_conf   := false
+        ipb_rev    := 0
+
+var line _vl_ln = na
+if not na(vl) and ph1_swept and not ph1_swept[1]
+    line.delete(_vl_ln)
+    _vl_ln := line.new(bar_index, vl, bar_index + 60, vl,
+         color=c_vl, style=line.style_dashed, width=2)
+    label.new(bar_index + 60, vl, "VL",
+         style=label.style_label_left, color=color.new(c_vl, 50), textcolor=c_vl, size=size.tiny)
+
+if mss_valid and not mss_valid[1]
+    label.new(bar_index, is_bull ? low : high, "MSS✓",
+         style=is_bull ? label.style_label_up : label.style_label_down,
+         color=color.new(c_bull, 50), textcolor=c_bull, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+//  PREMIUM / DISCOUNT  (50% gate — hard stop, no exceptions)
+// ═══════════════════════════════════════════════════════════════
+htf_mid     = (htf_hi_20 + htf_lo_20) / 2.0
+pd_idx      = close > htf_mid ? 0 : 1
+pd_suppress = (is_bull and close > htf_mid) or (is_bear and close < htf_mid)
+
+// ═══════════════════════════════════════════════════════════════
+//  M8 — ENTRY SIGNAL GENERATOR
+// ═══════════════════════════════════════════════════════════════
+rsi_v    = ta.rsi(close, i_rsi_l)
+div_bull = i_div and low < low[5] and rsi_v > rsi_v[5] and is_bull
+div_bear = i_div and high > high[5] and rsi_v < rsi_v[5] and is_bear
+div_on   = div_bull or div_bear
+
+// Phase 2 sub-type for entry aggressiveness
+ph2_now = not ph1_swept ? na :
+          ind_cnt >= 2 ? 2 :
+          ph2_swept and not mss_valid ? 3 :
+          ph2_type
+
+// Signals
+rev_sig = mss_valid and ph1_swept and ph2_swept and ob_v and not pd_suppress and barstate.isconfirmed
+ipb_sig = ph1_swept and not mss_valid and not pd_suppress and (corr_leg or ind_cnt >= 1) and barstate.isconfirmed
+
+sig     = rev_sig ? "reversal" : ipb_sig ? "ipb" : "none"
+is_new  = sig != "none" and sig != sig[1]
+
+// Entry zone
+ent_hi = is_bull ? ob_hi : ob_lo
+ent_lo = is_bull ? ob_lo : ob_hi
+
+// SL at end of manipulation sweep (beyond Phase 1)
+sl_pips = not na(ph1_lvl) and not na(ent_lo) ?
+     math.abs(ent_lo - ph1_lvl) / syminfo.mintick / 10.0 :
+     ta.atr(14) / syminfo.mintick / 10.0
+
+sl_level = is_bull ? ent_lo - sl_pips * syminfo.mintick * 10.0 :
+                     ent_hi + sl_pips * syminfo.mintick * 10.0
+
+// TPs (1.5R / 2.5R / 4R)
+rr   = math.abs(ent_hi - sl_level)
+tp1  = is_bull ? ent_hi + rr * 1.5 : ent_lo - rr * 1.5
+tp2  = is_bull ? ent_hi + rr * 2.5 : ent_lo - rr * 2.5
+tp3  = is_bull ? ent_hi + rr * 4.0 : ent_lo - rr * 4.0
+
+// Entry aggressiveness by Phase 2 sub-type
+aggr = ph2_now == 3 ? "LIMIT — near-zero post-tap" :
+       ph2_now == 2 ? "LIMIT — minimal post-tap"   :
+       ph2_now == 1 ? "5s/15s fail or LIMIT"        :
+                      "Wait 5s/15s S/D fail"
+
+// Pip value / lot sizing (ADI formula: risk / (sl_pips × pip_val))
+f_pip_val() =>
+    tk = i_inst == "Auto" ? syminfo.ticker : i_inst
+    tk == "XAUUSD" and i_broker == "Pepperstone" ? 10.0 :
+    tk == "XAUUSD" and i_broker == "Deriv"       ?  0.1 :
+    tk == "GBPUSD"                               ? 10.0 :
+    tk == "V75"   or tk == "V50"                 ?  1.0 :
+    tk == "V25"   or tk == "V10"                 ?  0.1 : 1.0
+
+f_min_lot() =>
+    i_broker == "Deriv" ? 1.0 : 0.01
+
+lot_base = sl_pips > 0.0 ? math.max(f_min_lot(), i_risk / (sl_pips * f_pip_val())) : 0.0
+
+// Signal visuals
+if is_new and barstate.isconfirmed
+    sc  = sig == "reversal" ? c_bull : c_neut
+    lbl = sig == "reversal" ? (is_bull ? "▲ REVERSAL" : "▼ REVERSAL") :
+                               (is_bull ? "▶ IPB" : "◀ IPB")
+    label.new(bar_index, is_bull ? low : high, lbl,
+         style=is_bull ? label.style_label_up : label.style_label_down,
+         color=color.new(sc, 40), textcolor=sc, size=size.normal)
+    if not na(sl_level)
+        line.new(bar_index, sl_level, bar_index + 50, sl_level,
+             color=color.new(c_bear, 20), style=line.style_dotted, width=2)
+        label.new(bar_index + 50, sl_level, "SL",
+             style=label.style_label_left, color=color.new(c_bear, 60), textcolor=c_bear, size=size.tiny)
+    if not na(tp1)
+        line.new(bar_index, tp1, bar_index + 70, tp1, color=color.new(c_bull, 40), style=line.style_dashed)
+        label.new(bar_index + 70, tp1, "TP1", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+    if not na(tp2)
+        line.new(bar_index, tp2, bar_index + 90, tp2, color=color.new(c_bull, 30), style=line.style_dashed)
+        label.new(bar_index + 90, tp2, "TP2", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+    if not na(tp3)
+        line.new(bar_index, tp3, bar_index + 110, tp3, color=color.new(c_bull, 20), style=line.style_dashed)
+        label.new(bar_index + 110, tp3, "TP3", style=label.style_label_left,
+             color=color.new(c_bull, 60), textcolor=c_bull, size=size.tiny)
+
+if div_on and barstate.isconfirmed
+    label.new(bar_index, div_bull ? low : high, div_bull ? "DIV▲" : "DIV▼",
+         style=div_bull ? label.style_label_up : label.style_label_down,
+         color=color.new(color.purple, 60), textcolor=color.purple, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+//  M9 — KNN EPISODIC MEMORY
+// ═══════════════════════════════════════════════════════════════
+// Episodes stored flat: each episode = 12 consecutive floats
+// Dims: 0=sess 1=cycle 2=asia_cls 3=ph1_type 4=ph2_type 5=ob_t
+//       6=pd_idx 7=ind_cnt(capped 5) 8=asia_pip(norm) 9=mmm 10=div 11=outcome
+var float[] eps = array.new_float(0)
+
+f_ep_n() => array.size(eps) / 12
+
+// Build feature vector
+f_fv(int outcome) =>
+    v = array.new_float(12, 0.0)
+    array.set(v, 0,  not na(sess_id) ? float(sess_id) : 0.0)
+    array.set(v, 1,  float(cycle_type))
+    array.set(v, 2,  not na(asia_cls) ? float(asia_cls) : 5.0)
+    array.set(v, 3,  float(ph1_type_now))
+    array.set(v, 4,  not na(ph2_type) ? float(ph2_type) : 0.0)
+    array.set(v, 5,  not na(ob_t) ? float(ob_t) : 0.0)
+    array.set(v, 6,  float(pd_idx))
+    array.set(v, 7,  math.min(5.0, float(ind_cnt)))
+    array.set(v, 8,  not na(asia_pip) ? math.min(1.0, asia_pip / 100.0) : 0.5)
+    array.set(v, 9,  is_mmm ? 1.0 : 0.0)
+    array.set(v, 10, div_on  ? 1.0 : 0.0)
+    array.set(v, 11, float(outcome))
+    v
+
+// Euclidean distance (dims 0–10; dim 7 inducement_count weighted ×2)
+f_dist(float[] a, float[] b) =>
+    d = 0.0
+    for di = 0 to 10
+        diff = array.get(a, di) - array.get(b, di)
+        w    = di == 7 ? 2.0 : 1.0
+        d   += w * diff * diff
+    math.sqrt(d)
+
+// Log episode (modifies eps array by reference)
+f_log(float[] v) =>
+    max_sz = i_max_ep * 12
+    if array.size(eps) >= max_sz
+        for _r = 0 to 11
+            array.remove(eps, 0)
+    for di = 0 to 11
+        array.push(eps, array.get(v, di))
+
+// KNN inference — returns [confidence, pattern_tag, risk_multiplier, k_wins]
+f_knn(float[] qv) =>
+    n    = f_ep_n()
+    conf = 0.0
+    pat  = "No episodes yet"
+    rm   = 1.0
+    kw   = 0
+    if n >= i_k
+        dists    = array.new_float(n, 0.0)
+        outcomes = array.new_float(n, 0.0)
+        // Compute all distances
+        for ei = 0 to n - 1
+            ev = array.new_float(12, 0.0)
+            b0 = ei * 12
+            for di = 0 to 11
+                array.set(ev, di, array.get(eps, b0 + di))
+            array.set(dists,    ei, f_dist(qv, ev))
+            array.set(outcomes, ei, array.get(ev, 11))
+        // k-nearest selection
+        used  = array.new_bool(n, false)
+        w_sum = 0.0
+        w_win = 0.0
+        wins  = 0
+        for _ki = 0 to i_k - 1
+            bd = 1e10
+            bi = 0
+            for ei2 = 0 to n - 1
+                if not array.get(used, ei2)
+                    d2 = array.get(dists, ei2)
+                    if d2 < bd
+                        bd := d2
+                        bi := ei2
+            array.set(used, bi, true)
+            w      = bd > 0.0 ? 1.0 / bd : 100.0
+            w_sum += w
+            if array.get(outcomes, bi) >= 1.0
+                wins  += 1
+                w_win += w
+        kw   := wins
+        conf := w_sum > 0.0 ? w_win / w_sum * 100.0 : 0.0
+        // Pattern tag
+        si2 = math.round(array.get(qv, 0))
+        pi2 = math.round(array.get(qv, 4))
+        ic2 = math.round(array.get(qv, 7))
+        sn  = array.from("Asia", "FFT", "Ldn", "NY", "NYTr", "LdnCl")
+        pn  = array.from("ChoCh", "RstLiq", "2Ph1", "2ndMs")
+        pat := array.get(sn, math.min(5, si2)) + "/" + array.get(pn, math.min(3, pi2)) +
+               " ind#" + str.tostring(ic2)
+        rm  := math.min(1.5, math.max(0.5, conf / 100.0 * 1.5))
+    [conf, pat, rm, kw]
+
+// Score on new signal
+var float  knn_conf = 0.0
+var string knn_pat  = "No episodes"
+var float  knn_rm   = 1.0
+var int    knn_kw   = 0
+
+if is_new
+    qv = f_fv(2)
+    [c, p, r, k] = f_knn(qv)
+    knn_conf := math.min(100.0, c + (div_on ? 5.0 : 0.0))
+    knn_pat  := p
+    knn_rm   := r
+    knn_kw   := k
+
+// Outcome logging (operator sets i_log to 0/1/2 on bar after trade closes)
+var int _prev_log = 9
+if i_log != 9 and _prev_log == 9
+    f_log(f_fv(i_log))
+_prev_log := i_log
+
+eff_risk = i_risk * knn_rm
+eff_lots = sl_pips > 0.0 ? math.max(f_min_lot(), eff_risk / (sl_pips * f_pip_val())) : 0.0
+
+// ═══════════════════════════════════════════════════════════════
+//  M10 — GLASS BOX NARRATIVE + UNIFIED DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+s_sess = not na(sess_id) ?
+     array.get(array.from("Asia","Frankfurt","London","NY Open","NY Trap","Ldn Close"),
+     math.min(5, sess_id)) : "Off-Hours"
+s_bias = is_bull ? "BULLISH" : is_bear ? "BEARISH" : "RANGING"
+s_amd  = amd_ph == 0 ? "Accumulation" : amd_ph == 1 ? "Manipulation" : "Distribution"
+s_sig  = sig == "reversal" ? (is_bull ? "▲ REVERSAL BUY" : "▼ REVERSAL SELL") :
+         sig == "ipb"       ? (is_bull ? "▶ IPB BUY" : "◀ IPB SELL") : "— Watching"
+
+// Tier 1 alert (War Room full)
+_t1 = "PIE-v1 | ADI WAR ROOM\n" +
+    "Sess: " + s_sess + (is_mmm ? " ⚡MMM" : "") + " | " + s_bias + "\n" +
+    "AMD: " + s_amd + " | Ind#" + str.tostring(ind_cnt) + "\n" +
+    "Ph1:" + (ph1_swept ? "swept✓" : "pending") +
+    " Ph2:" + (ph2_swept ? "swept✓" : "pending") + "\n" +
+    "MSS:" + (mss_valid ? "VALID✓" : "pending") +
+    " Gate:" + (pd_suppress ? "SUPP⛔" : "clear✓") + "\n" +
+    "Signal: " + s_sig + "\n" +
+    "Entry: " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") + "/" + str.tostring(ent_lo,"#.####") : "—") + "\n" +
+    "SL: " + (not na(sl_level) ? str.tostring(sl_level,"#.####") + "(" + str.tostring(math.round(sl_pips)) + "p)" : "—") + "\n" +
+    "TP1/2/3: " + (not na(tp1) ? str.tostring(tp1,"#.####") : "—") + "/" +
+                  (not na(tp2) ? str.tostring(tp2,"#.####") : "—") + "/" +
+                  (not na(tp3) ? str.tostring(tp3,"#.####") : "—") + "\n" +
+    "Lots: " + str.tostring(math.round(eff_lots * 100) / 100,"#.##") + " @ $" + str.tostring(math.round(eff_risk)) + "\n" +
+    "KNN: " + str.tostring(math.round(knn_conf)) + "% | " + knn_pat + "\n" +
+    "Entry style: " + aggr
+
+// Public 3-liner
+_pub = sig != "none" ?
+    (is_bull ? "🟢 " : "🔴 ") + str.upper(sig) + " | " + s_sess + " | " + s_amd + "\n" +
+    "Entry " + (not na(ent_hi) ? str.tostring(ent_hi,"#.####") : "—") +
+    " SL " + (not na(sl_level) ? str.tostring(sl_level,"#.####") : "—") + "\n" +
+    "Full analysis in the War Room 🔐" :
+    "⏳ No signal | " + s_amd
+
+// ─── Alerts ───
+alertcondition(is_new and sig == "reversal", title="PIE-v1 REVERSAL",  message=_t1)
+alertcondition(is_new and sig == "ipb",      title="PIE-v1 IPB",       message=_t1)
+alertcondition(sig == "none",                title="PIE-v1 No Trade",  message=s_sess + " | " + s_amd)
+alertcondition(sig != "none" and not na(tp1) and (is_bull ? high >= tp1 : low <= tp1),
+     title="PIE-v1 TP1 Hit", message="TP1 | " + _t1)
+alertcondition(sig != "none" and not na(tp2) and (is_bull ? high >= tp2 : low <= tp2),
+     title="PIE-v1 TP2 Hit", message="TP2 hit")
+
+// ─── Dashboard table ───
+var table dash = table.new(position.top_right, 2, 17,
+     bgcolor=color.new(#0a0a0a, 5), border_width=1, border_color=#222222)
+
+if barstate.islast
+    // Header
+    table.cell(dash, 0, 0, "PIE-v1 | ADI", text_color=c_neut,
+         bgcolor=#1a1a2e, text_size=size.small)
+    table.cell(dash, 1, 0, "EAT/UTC+3 | No DST",
+         text_color=#666666, bgcolor=#1a1a2e, text_size=size.small)
+
+    // Signal (prominent)
+    sc2 = sig == "reversal" ? c_bull : sig == "ipb" ? c_neut : #444444
+    table.cell(dash, 0, 1, s_sig,  text_color=sc2, bgcolor=color.new(sc2, 88), text_size=size.normal)
+    table.cell(dash, 1, 1, s_amd,  text_color=color.silver, text_size=size.normal)
+
+    // M1
+    table.cell(dash, 0, 2, "Session", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 2, s_sess + (is_mmm ? " ⚡MMM" : ""),
+         text_color=is_mmm ? c_neut : color.white, text_size=size.tiny)
+
+    // M2
+    table.cell(dash, 0, 3, "Asia", text_color=#666666, text_size=size.tiny)
+    _cn = not na(asia_cls) ?
+         array.get(array.from("AWS","Hi/Lo","Cont","Mid","Imp","BldUp","Rng"), math.min(6, asia_cls)) : "?"
+    table.cell(dash, 1, 3, _cn + " " + (not na(asia_pip) ? str.tostring(math.round(asia_pip)) + "p" : "?"),
+         text_color=color.white, text_size=size.tiny)
+
+    // M3
+    table.cell(dash, 0, 4, "Cycle", text_color=#666666, text_size=size.tiny)
+    _cyc = cycle_type == 0 ? "DownRun" : cycle_type == 1 ? "SlightTrend" : "Range"
+    _dv  = daily_var == 0 ? "BldUpMC" : daily_var == 1 ? "BrkRetest" : "AsiaWS"
+    table.cell(dash, 1, 4, s_bias + " | " + _cyc + " | " + _dv + (ct_ok ? " CT✓" : ""),
+         text_color=is_bull ? c_bull : is_bear ? c_bear : #888888, text_size=size.tiny)
+
+    // M4
+    table.cell(dash, 0, 5, "Structure", text_color=#666666, text_size=size.tiny)
+    _ss = bos_bull ? "BoS▲" : bos_bear ? "BoS▼" : choch_valid ? "ChoCh✓" : choch_cand ? "ChoCh?" : "—"
+    table.cell(dash, 1, 5, _ss + (choch_smt ? " SMT" : "") + (corr_leg ? " CorrLeg" : ""),
+         text_color=choch_valid ? c_bull : color.white, text_size=size.tiny)
+
+    // M5
+    table.cell(dash, 0, 6, "OB", text_color=#666666, text_size=size.tiny)
+    _ot = not na(ob_t) ? array.get(array.from("Engulfed","Imb","Wick","SMT⚠","Ph1Rx"), math.min(4, ob_t)) : "None"
+    table.cell(dash, 1, 6, (ob_v ? _ot : "None") + (slight_mit ? " SlMit" : ""),
+         text_color=ob_v ? (is_bull ? c_bull : c_bear) : #666666, text_size=size.tiny)
+
+    // M6
+    table.cell(dash, 0, 7, "Inducement", text_color=#666666, text_size=size.tiny)
+    _p1n = not na(ph1_type) ? array.get(array.from("Minor","Medium","Major"), math.min(2, ph1_type)) : "?"
+    _p2n = not na(ph2_type) ? array.get(array.from("ChoCh","RstLiq","2Ph1","2ndMs"), math.min(3, ph2_type)) : "?"
+    table.cell(dash, 1, 7, "Ph1:" + _p1n + " Ph2:" + _p2n + " #" + str.tostring(ind_cnt),
+         text_color=ph2_swept ? c_bull : ph1_swept ? c_neut : #888888, text_size=size.tiny)
+
+    // M7
+    table.cell(dash, 0, 8, "MSS / VL", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 8,
+         (mss_valid ? "MSS✓" : "MSS?") + " VL:" + (not na(vl) ? str.tostring(vl,"#.####") : "—") +
+         (manip_conf ? " M✓" : "") + (rev_conf ? " R✓" : ""),
+         text_color=mss_valid ? c_bull : c_bear, text_size=size.tiny)
+
+    // P/D Gate
+    table.cell(dash, 0, 9, "P/D Gate", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 9, pd_suppress ? "SUPPRESS ⛔ (>50%)" : "Clear ✓ (<50%)",
+         text_color=pd_suppress ? c_bear : c_bull, text_size=size.tiny)
+
+    // Entry
+    table.cell(dash, 0, 10, "Entry Zone", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 10,
+         not na(ent_hi) ? str.tostring(ent_hi,"#.#####") + " / " + str.tostring(ent_lo,"#.#####") : "—",
+         text_color=color.white, text_size=size.tiny)
+
+    // SL + Lots
+    table.cell(dash, 0, 11, "SL | Lots", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 11,
+         (not na(sl_level) ? str.tostring(sl_level,"#.#####") : "—") + " | " +
+         str.tostring(math.round(eff_lots * 100) / 100,"#.##") + " lots",
+         text_color=color.white, text_size=size.tiny)
+
+    // TPs
+    table.cell(dash, 0, 12, "TP1/2/3", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 12,
+         (not na(tp1) ? str.tostring(tp1,"#.####") : "—") + " / " +
+         (not na(tp2) ? str.tostring(tp2,"#.####") : "—") + " / " +
+         (not na(tp3) ? str.tostring(tp3,"#.####") : "—"),
+         text_color=c_bull, text_size=size.tiny)
+
+    // KNN
+    _cc = knn_conf >= 70.0 ? c_bull : knn_conf >= 50.0 ? c_neut : c_bear
+    table.cell(dash, 0, 13, "KNN", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 13,
+         str.tostring(math.round(knn_conf)) + "% | " + knn_pat +
+         " | k-W:" + str.tostring(knn_kw) + "/" + str.tostring(i_k),
+         text_color=_cc, text_size=size.tiny)
+
+    // Entry style
+    table.cell(dash, 0, 14, "Entry Style", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 14, aggr, text_color=color.silver, text_size=size.tiny)
+
+    // Week + episodes
+    _wp = week_ph == 0 ? "Mon/Fake" : week_ph == 1 ? "Tue-Thu/Real" : "Fri/Accum"
+    table.cell(dash, 0, 15, "Week | Episodes", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 15, _wp + " | " + str.tostring(f_ep_n()) + "/" + str.tostring(i_max_ep) +
+         (div_on ? " DIV⚡" : ""), text_color=#888888, text_size=size.tiny)
+
+    // Public channel preview
+    table.cell(dash, 0, 16, "Public", text_color=#666666, text_size=size.tiny)
+    table.cell(dash, 1, 16, _pub, text_color=color.silver, text_size=size.tiny)
+
+// ─── Data Window plots ───
+plot(not na(sess_id) ? float(sess_id) : na, "Session ID",        display=display.data_window)
+plot(float(ind_cnt),                        "Inducement Count",   display=display.data_window)
+plot(knn_conf,                              "KNN Confidence %",   display=display.data_window)
+plot(knn_rm,                                "KNN Risk Multiplier",display=display.data_window)
+plot(sl_pips,                               "SL Pips",            display=display.data_window)
+plot(eff_lots,                              "Effective Lots",     display=display.data_window)
+plot(sig == "reversal" ? 2.0 : sig == "ipb" ? 1.0 : 0.0, "Signal (2=Rev 1=IPB 0=None)", display=display.data_window)
